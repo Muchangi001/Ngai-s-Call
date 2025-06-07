@@ -20,6 +20,8 @@ class GameConfig {
   static final player = _PlayerConfig();
   static final enemy = _EnemyConfig();
   static final blessing = _BlessingConfig();
+  static final proverb = _ProverbConfig();
+  static final ancestor = _AncestorConfig();
   static final game = _GameConfig();
 }
 
@@ -45,10 +47,54 @@ class _BlessingConfig {
   final double energyOnCollect = 20.0;
 }
 
+class _ProverbConfig {
+  final double size = 8.0;
+  final double spawnInterval = 12.0;
+  final int scoreOnCollect = 25;
+  final int wisdomOnCollect = 1;
+  final double energyOnCollect = 15.0;
+}
+
+class _AncestorConfig {
+  final double size = 20.0;
+  final double spawnInterval = 25.0;
+  final int scoreOnCollect = 50;
+  final double energyOnCollect = 40.0;
+  final double blessingDuration = 8.0;
+}
+
 class _GameConfig {
   final double initialEnergy = 50.0;
   final double maxEnergy = 100.0;
   final int initialEnemyCount = 3;
+}
+
+// --- Kikuyu Wisdom Database ---
+class KikuyuWisdom {
+  static final List<String> proverbs = [
+    "Gikuyu na Mumbi - Unity gives strength",
+    "Harambee - We pull together",
+    "Mti hauendi uru na ugeeni - A tree doesn't lean without wind",
+    "Kahiu gatagwo na njira - A hawk circles its prey",
+    "Mwaki wa muingi ndungagwo - A community fire burns bright",
+    "Muici ndacokaga na kirira - The thief returns with tears",
+    "Gutiri mwana wa nyawira - No child belongs to work alone",
+    "Njira ya muingi ti ya kaba - The people's path has no thorns",
+    "Mti wa Ngai - Tree of the Most High",
+    "Gikeno kia njohi - Joy comes from unity"
+  ];
+
+  static final List<String> ancestorSayings = [
+    "Ngai watches over the faithful",
+    "The ancestors guide your path",
+    "Wisdom flows like the sacred river",
+    "Mount Kenya stands eternal",
+    "The fig tree shelters all who seek",
+    "Sacred groves hold ancient power"
+  ];
+
+  static String getRandomProverb() => proverbs[math.Random().nextInt(proverbs.length)];
+  static String getRandomAncestorSaying() => ancestorSayings[math.Random().nextInt(ancestorSayings.length)];
 }
 
 // --- Game State ---
@@ -62,16 +108,24 @@ class NgaisCallGame extends FlameGame with HasKeyboardHandlerComponents, HasColl
   late Player player;
   late SpiritualEnergyBar ui;
   late PlayerInputHandler inputHandler;
+  late ForestBackground forest;
 
   // Timers for spawning entities
   late Timer _enemySpawnTimer;
   late Timer _blessingSpawnTimer;
+  late Timer _proverbSpawnTimer;
+  late Timer _ancestorSpawnTimer;
 
   int score = 0;
+  int wisdom = 0;
+  String? currentMessage;
+  double messageTimer = 0;
 
   @override
   Future<void> onLoad() async {
-    add(Background());
+    // Add forest background first
+    forest = ForestBackground();
+    add(forest);
 
     // Initialize player
     player = Player();
@@ -81,7 +135,7 @@ class NgaisCallGame extends FlameGame with HasKeyboardHandlerComponents, HasColl
     ui = SpiritualEnergyBar();
     add(ui);
     
-    // Add input handler - this was missing!
+    // Add input handler
     inputHandler = PlayerInputHandler();
     add(inputHandler);
     
@@ -97,11 +151,16 @@ class NgaisCallGame extends FlameGame with HasKeyboardHandlerComponents, HasColl
 
   void reset() {
     score = 0;
+    wisdom = 0;
     state = GameState.playing;
+    currentMessage = null;
+    messageTimer = 0;
     
-    // Remove all enemies, blessings and game over screen
+    // Remove all entities and game over screen
     children.whereType<Enemy>().forEach((enemy) => enemy.removeFromParent());
     children.whereType<Blessing>().forEach((blessing) => blessing.removeFromParent());
+    children.whereType<KikuyuProverb>().forEach((proverb) => proverb.removeFromParent());
+    children.whereType<AncestorSpirit>().forEach((ancestor) => ancestor.removeFromParent());
     children.whereType<GameOverScreen>().forEach((screen) => screen.removeFromParent());
     
     // Reset player and UI
@@ -128,8 +187,13 @@ class NgaisCallGame extends FlameGame with HasKeyboardHandlerComponents, HasColl
   void _startSpawning() {
     _enemySpawnTimer = Timer(GameConfig.enemy.spawnInterval, onTick: spawnEnemy, repeat: true);
     _blessingSpawnTimer = Timer(GameConfig.blessing.spawnInterval, onTick: spawnBlessing, repeat: true);
+    _proverbSpawnTimer = Timer(GameConfig.proverb.spawnInterval, onTick: spawnProverb, repeat: true);
+    _ancestorSpawnTimer = Timer(GameConfig.ancestor.spawnInterval, onTick: spawnAncestor, repeat: true);
+    
     _enemySpawnTimer.start();
     _blessingSpawnTimer.start();
+    _proverbSpawnTimer.start();
+    _ancestorSpawnTimer.start();
   }
 
   void spawnEnemy() {
@@ -161,12 +225,43 @@ class NgaisCallGame extends FlameGame with HasKeyboardHandlerComponents, HasColl
     add(Blessing(startPosition: position));
   }
 
+  void spawnProverb() {
+    final position = Vector2(
+      math.Random().nextDouble() * size.x,
+      math.Random().nextDouble() * size.y,
+    );
+    add(KikuyuProverb(startPosition: position));
+  }
+
+  void spawnAncestor() {
+    final position = Vector2(
+      math.Random().nextDouble() * size.x,
+      math.Random().nextDouble() * size.y,
+    );
+    add(AncestorSpirit(startPosition: position));
+  }
+
+  void showMessage(String message) {
+    currentMessage = message;
+    messageTimer = 3.0; // Show for 3 seconds
+  }
+
   @override
   void update(double dt) {
     super.update(dt);
     if (state == GameState.playing) {
       _enemySpawnTimer.update(dt);
       _blessingSpawnTimer.update(dt);
+      _proverbSpawnTimer.update(dt);
+      _ancestorSpawnTimer.update(dt);
+    }
+    
+    // Update message timer
+    if (messageTimer > 0) {
+      messageTimer -= dt;
+      if (messageTimer <= 0) {
+        currentMessage = null;
+      }
     }
   }
 
@@ -174,19 +269,133 @@ class NgaisCallGame extends FlameGame with HasKeyboardHandlerComponents, HasColl
     state = GameState.gameOver;
     _enemySpawnTimer.stop();
     _blessingSpawnTimer.stop();
+    _proverbSpawnTimer.stop();
+    _ancestorSpawnTimer.stop();
     add(GameOverScreen());
+  }
+}
+
+// --- Forest Background ---
+class ForestBackground extends Component with HasGameRef<NgaisCallGame> {
+  final List<TreeSprite> trees = [];
+  final List<SacredGrove> groves = [];
+
+  @override
+  Future<void> onLoad() async {
+    // Generate forest elements
+    _generateTrees();
+    _generateSacredGroves();
+  }
+
+  void _generateTrees() {
+    final random = math.Random();
+    for (int i = 0; i < 15; i++) {
+      trees.add(TreeSprite(
+        position: Vector2(
+          random.nextDouble() * gameRef.size.x,
+          random.nextDouble() * gameRef.size.y,
+        ),
+        size: random.nextDouble() * 30 + 20,
+      ));
+    }
+  }
+
+  void _generateSacredGroves() {
+    final random = math.Random();
+    for (int i = 0; i < 3; i++) {
+      groves.add(SacredGrove(
+        position: Vector2(
+          random.nextDouble() * gameRef.size.x,
+          random.nextDouble() * gameRef.size.y,
+        ),
+      ));
+    }
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final gameSize = gameRef.size;
+    
+    // Forest gradient background
+    final rect = Rect.fromLTWH(0, 0, gameSize.x, gameSize.y);
+    final paint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF0D4F3C), Color(0xFF1B5E20), Color(0xFF2E7D32)],
+      ).createShader(rect);
+    canvas.drawRect(rect, paint);
+    
+    // Render sacred groves first (background layer)
+    for (final grove in groves) {
+      grove.render(canvas);
+    }
+    
+    // Render trees
+    for (final tree in trees) {
+      tree.render(canvas);
+    }
+  }
+}
+
+class TreeSprite {
+  final Vector2 position;
+  final double size;
+
+  TreeSprite({required this.position, required this.size});
+
+  void render(Canvas canvas) {
+    // Tree trunk
+    final trunkPaint = Paint()..color = const Color(0xFF4E342E);
+    canvas.drawRect(
+      Rect.fromCenter(center: Offset(position.x, position.y + size * 0.3), width: size * 0.2, height: size * 0.6),
+      trunkPaint
+    );
+    
+    // Tree canopy
+    final canopyPaint = Paint()..color = const Color(0xFF2E7D32);
+    canvas.drawCircle(Offset(position.x, position.y - size * 0.2), size * 0.4, canopyPaint);
+    
+    // Lighter foliage details
+    final lightFoliage = Paint()..color = const Color(0xFF4CAF50);
+    canvas.drawCircle(Offset(position.x - size * 0.1, position.y - size * 0.3), size * 0.15, lightFoliage);
+    canvas.drawCircle(Offset(position.x + size * 0.1, position.y - size * 0.1), size * 0.12, lightFoliage);
+  }
+}
+
+class SacredGrove {
+  final Vector2 position;
+
+  SacredGrove({required this.position});
+
+  void render(Canvas canvas) {
+    // Sacred circle
+    final grovePaint = Paint()..color = const Color(0xFF1B5E20).withOpacity(0.3);
+    canvas.drawCircle(Offset(position.x, position.y), 60, grovePaint);
+    
+    // Inner sacred ring
+    final sacredPaint = Paint()
+      ..color = const Color(0xFF4CAF50).withOpacity(0.2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    canvas.drawCircle(Offset(position.x, position.y), 50, sacredPaint);
   }
 }
 
 // --- Player Component ---
 class Player extends PositionComponent with CollisionCallbacks {
   bool isProtected = false;
+  bool hasAncestorBlessing = false;
   late Timer _protectionTimer;
+  late Timer _ancestorBlessingTimer;
   Vector2 _moveDirection = Vector2.zero();
 
   Player() : super(size: Vector2.all(GameConfig.player.size * 2), anchor: Anchor.center) {
     _protectionTimer = Timer(GameConfig.player.protectionDuration, onTick: () {
       isProtected = false;
+    });
+    _ancestorBlessingTimer = Timer(GameConfig.ancestor.blessingDuration, onTick: () {
+      hasAncestorBlessing = false;
     });
   }
 
@@ -202,16 +411,32 @@ class Player extends PositionComponent with CollisionCallbacks {
       position = gameRef.size / 2;
     }
     isProtected = false;
+    hasAncestorBlessing = false;
     _protectionTimer.stop();
+    _ancestorBlessingTimer.stop();
   }
   
   @override
   void render(Canvas canvas) {
     super.render(canvas);
-    final paint = isProtected 
-        ? (Paint()..color = const Color(0xFFFFC107)) 
-        : BasicPalette.lightBlue.paint();
-    final glowOpacity = isProtected ? 0.5 : 0.3;
+    
+    // Base color based on state
+    Color baseColor = const Color(0xFF03A9F4); // Light blue
+    if (hasAncestorBlessing) baseColor = const Color(0xFFFFD700); // Gold
+    if (isProtected) baseColor = const Color(0xFFFFC107); // Amber
+    
+    final paint = Paint()..color = baseColor;
+    final glowOpacity = (isProtected || hasAncestorBlessing) ? 0.6 : 0.3;
+    
+    // Draw spiritual aura
+    if (hasAncestorBlessing) {
+      // Ancestor blessing aura (golden)
+      canvas.drawCircle(
+        Offset.zero,
+        size.x / 2 + 8,
+        Paint()..color = const Color(0xFFFFD700).withOpacity(0.4)
+      );
+    }
     
     // Draw glow effect
     canvas.drawCircle(
@@ -219,17 +444,27 @@ class Player extends PositionComponent with CollisionCallbacks {
       size.x / 2 + 3,
       Paint()..color = paint.color.withOpacity(glowOpacity)
     );
+    
     // Draw main player circle
     canvas.drawCircle(Offset.zero, size.x / 2, paint);
+    
+    // Draw inner spiritual core
+    canvas.drawCircle(
+      Offset.zero, 
+      size.x / 3, 
+      Paint()..color = Colors.white.withOpacity(0.7)
+    );
   }
 
   @override
   void update(double dt) {
     super.update(dt);
     if (isProtected) _protectionTimer.update(dt);
+    if (hasAncestorBlessing) _ancestorBlessingTimer.update(dt);
     
     // Update position based on movement direction
-    position += _moveDirection.normalized() * GameConfig.player.speed * dt;
+    final speed = hasAncestorBlessing ? GameConfig.player.speed * 1.5 : GameConfig.player.speed;
+    position += _moveDirection.normalized() * speed * dt;
     
     // Keep player within screen bounds
     final gameRef = findGame();
@@ -242,25 +477,36 @@ class Player extends PositionComponent with CollisionCallbacks {
   @override
   void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
     super.onCollisionStart(intersectionPoints, other);
+    final gameRef = findGame() as NgaisCallGame?;
+    if (gameRef == null) return;
     
     if (other is Enemy) {
-      if (isProtected) {
+      if (isProtected || hasAncestorBlessing) {
         other.removeFromParent();
-        final gameRef = findGame() as NgaisCallGame?;
-        if (gameRef != null) {
-          gameRef.score += GameConfig.enemy.scoreOnDestroy;
-          gameRef.ui.addEnergy(GameConfig.enemy.energyOnDestroy);
+        gameRef.score += GameConfig.enemy.scoreOnDestroy;
+        gameRef.ui.addEnergy(GameConfig.enemy.energyOnDestroy);
+        if (hasAncestorBlessing) {
+          gameRef.score += GameConfig.enemy.scoreOnDestroy; // Double score with ancestor blessing
         }
       } else {
-        (findGame() as NgaisCallGame?)?.onGameOver();
+        gameRef.onGameOver();
       }
     } else if (other is Blessing) {
       other.removeFromParent();
-      final gameRef = findGame() as NgaisCallGame?;
-      if (gameRef != null) {
-        gameRef.score += GameConfig.blessing.scoreOnCollect;
-        gameRef.ui.addEnergy(GameConfig.blessing.energyOnCollect);
-      }
+      gameRef.score += GameConfig.blessing.scoreOnCollect;
+      gameRef.ui.addEnergy(GameConfig.blessing.energyOnCollect);
+    } else if (other is KikuyuProverb) {
+      other.removeFromParent();
+      gameRef.score += GameConfig.proverb.scoreOnCollect;
+      gameRef.wisdom += GameConfig.proverb.wisdomOnCollect;
+      gameRef.ui.addEnergy(GameConfig.proverb.energyOnCollect);
+      gameRef.showMessage(other.proverb);
+    } else if (other is AncestorSpirit) {
+      other.removeFromParent();
+      gameRef.score += GameConfig.ancestor.scoreOnCollect;
+      gameRef.ui.addEnergy(GameConfig.ancestor.energyOnCollect);
+      activateAncestorBlessing();
+      gameRef.showMessage(other.saying);
     }
   }
 
@@ -299,6 +545,11 @@ class Player extends PositionComponent with CollisionCallbacks {
     isProtected = true;
     _protectionTimer.start();
   }
+
+  void activateAncestorBlessing() {
+    hasAncestorBlessing = true;
+    _ancestorBlessingTimer.start();
+  }
 }
 
 // --- Enemy Component ---
@@ -316,13 +567,16 @@ class Enemy extends PositionComponent with HasGameRef<NgaisCallGame> {
   @override
   void render(Canvas canvas) {
     super.render(canvas);
-    final enemyPaint = BasicPalette.red.paint();
+    final enemyPaint = Paint()..color = const Color(0xFFD32F2F);
     
     // Dark aura
     canvas.drawCircle(Offset.zero, size.x / 2 + 4, 
         Paint()..color = enemyPaint.color.withOpacity(0.4));
     // Core
     canvas.drawCircle(Offset.zero, size.x / 2, enemyPaint);
+    // Evil eye
+    canvas.drawCircle(Offset.zero, size.x / 4, 
+        Paint()..color = const Color(0xFF8B0000));
   }
 
   @override
@@ -352,7 +606,7 @@ class Blessing extends PositionComponent {
   @override
   void render(Canvas canvas) {
     super.render(canvas);
-    final blessingPaint = BasicPalette.green.paint();
+    final blessingPaint = Paint()..color = const Color(0xFF4CAF50);
     final pulseEffect = (math.sin(_pulseTimer * 4) * 0.2 + 1.0);
     
     // Pulsing glow
@@ -363,12 +617,122 @@ class Blessing extends PositionComponent {
     );
     // Core
     canvas.drawCircle(Offset.zero, size.x / 2, blessingPaint);
+    // Inner light
+    canvas.drawCircle(Offset.zero, size.x / 3, 
+        Paint()..color = const Color(0xFF81C784));
   }
   
   @override
   void update(double dt) {
     super.update(dt);
     _pulseTimer += dt;
+  }
+}
+
+// --- Kikuyu Proverb Component ---
+class KikuyuProverb extends PositionComponent {
+  final Vector2 startPosition;
+  final String proverb;
+  double _glowTimer = 0;
+
+  KikuyuProverb({required this.startPosition}) 
+    : proverb = KikuyuWisdom.getRandomProverb(),
+      super(size: Vector2.all(GameConfig.proverb.size * 2), anchor: Anchor.center);
+
+  @override
+  Future<void> onLoad() async {
+    position = startPosition;
+    add(CircleHitbox());
+  }
+
+  @override
+  void render(Canvas canvas) {
+    super.render(canvas);
+    final proverbPaint = Paint()..color = const Color(0xFF9C27B0); // Purple for wisdom
+    final glowEffect = (math.sin(_glowTimer * 3) * 0.3 + 0.7);
+    
+    // Wisdom aura
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2 + 6,
+      Paint()..color = proverbPaint.color.withOpacity(0.2 * glowEffect)
+    );
+    
+    // Main circle
+    canvas.drawCircle(Offset.zero, size.x / 2, proverbPaint);
+    
+    // Wisdom symbol (small inner circles)
+    canvas.drawCircle(Offset(-size.x/4, -size.y/4), 2, 
+        Paint()..color = const Color(0xFFE1BEE7));
+    canvas.drawCircle(Offset(size.x/4, -size.y/4), 2, 
+        Paint()..color = const Color(0xFFE1BEE7));
+    canvas.drawCircle(Offset(0, size.y/4), 2, 
+        Paint()..color = const Color(0xFFE1BEE7));
+  }
+  
+  @override
+  void update(double dt) {
+    super.update(dt);
+    _glowTimer += dt;
+  }
+}
+
+// --- Ancestor Spirit Component ---
+class AncestorSpirit extends PositionComponent {
+  final Vector2 startPosition;
+  final String saying;
+  double _floatTimer = 0;
+  late Vector2 _originalPosition;
+
+  AncestorSpirit({required this.startPosition}) 
+    : saying = KikuyuWisdom.getRandomAncestorSaying(),
+      super(size: Vector2.all(GameConfig.ancestor.size * 2), anchor: Anchor.center);
+
+  @override
+  Future<void> onLoad() async {
+    position = startPosition;
+    _originalPosition = startPosition.clone();
+    add(CircleHitbox());
+  }
+
+  @override
+  void render(Canvas canvas) {
+    super.render(canvas);
+    final ancestorPaint = Paint()..color = const Color(0xFFFFD700); // Gold
+    final floatEffect = math.sin(_floatTimer * 2) * 0.3 + 1.0;
+    
+    // Divine aura
+    canvas.drawCircle(
+      Offset.zero,
+      (size.x / 2 + 10) * floatEffect,
+      Paint()..color = ancestorPaint.color.withOpacity(0.15)
+    );
+    
+    // Outer ring
+    canvas.drawCircle(Offset.zero, size.x / 2, 
+        Paint()
+          ..color = ancestorPaint.color.withOpacity(0.8)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3);
+    
+    // Inner core
+    canvas.drawCircle(Offset.zero, size.x / 3, ancestorPaint);
+    
+    // Sacred symbols
+    final symbolPaint = Paint()..color = const Color(0xFFFFFFFF);
+    canvas.drawCircle(Offset(0, -size.y/4), 3, symbolPaint);
+    canvas.drawCircle(Offset(-size.x/4, size.y/6), 3, symbolPaint);
+    canvas.drawCircle(Offset(size.x/4, size.y/6), 3, symbolPaint);
+  }
+  
+  @override
+  void update(double dt) {
+    super.update(dt);
+    _floatTimer += dt;
+    
+    // Floating motion
+    final floatOffset = Vector2(0, math.sin(_floatTimer * 2) * 5);
+    position = _originalPosition + floatOffset;
   }
 }
 
@@ -387,22 +751,48 @@ class SpiritualEnergyBar extends PositionComponent with HasGameRef<NgaisCallGame
   @override
   void render(Canvas canvas) {
     super.render(canvas);
+    
     // Energy bar background
-    final bgPaint = Paint()..color = Colors.black.withOpacity(0.5);
-    canvas.drawRect(const Rect.fromLTWH(10, 10, 200, 20), bgPaint);
+    final bgPaint = Paint()..color = Colors.black.withOpacity(0.7);
+    canvas.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(10, 10, 200, 20), const Radius.circular(10)), bgPaint);
 
     // Energy bar fill
     final energyPaint = Paint()..color = energy > GameConfig.player.protectionEnergyCost 
-        ? Colors.lightBlueAccent 
-        : Colors.redAccent;
+        ? const Color(0xFF4CAF50) 
+        : const Color(0xFFFF5722);
     final energyWidth = (energy / maxEnergy) * 200;
-    canvas.drawRect(Rect.fromLTWH(10, 10, energyWidth, 20), energyPaint);
+    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(10, 10, energyWidth, 20), const Radius.circular(10)), energyPaint);
 
-    // Score Text
+    // Score and Wisdom Text
+    final scoreStyle = const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold);
+    final wisdomStyle = const TextStyle(color: Color(0xFF9C27B0), fontSize: 14, fontWeight: FontWeight.bold);
+    
     TextPainter(
-      text: TextSpan(text: 'Score: ${game.score}', style: const TextStyle(color: Colors.white, fontSize: 16)),
+      text: TextSpan(text: 'Score: ${game.score}', style: scoreStyle),
       textDirection: TextDirection.ltr,
     )..layout()..paint(canvas, const Offset(10, 35));
+
+    TextPainter(
+      text: TextSpan(text: 'Wisdom: ${game.wisdom}', style: wisdomStyle),
+      textDirection: TextDirection.ltr,
+    )..layout()..paint(canvas, const Offset(10, 55));
+
+    // Current message display
+    if (game.currentMessage != null) {
+      final messagePaint = Paint()..color = Colors.black.withOpacity(0.8);
+      final messageRect = Rect.fromLTWH(10, game.size.y - 120, game.size.x - 20, 60);
+      canvas.drawRRect(RRect.fromRectAndRadius(messageRect, const Radius.circular(8)), messagePaint);
+      
+      final messageStyle = const TextStyle(color: Color(0xFFFFD700), fontSize: 12, fontWeight: FontWeight.bold);
+      final textPainter = TextPainter(
+        text: TextSpan(text: game.currentMessage!, style: messageStyle),
+        textDirection: TextDirection.ltr,
+        maxLines: 3,
+        textAlign: TextAlign.center,
+      );
+      textPainter.layout(maxWidth: game.size.x - 40);
+      textPainter.paint(canvas, Offset(20, game.size.y - 110));
+    }
   }
 }
 
@@ -421,22 +811,31 @@ class PlayerInputHandler extends Component with KeyboardHandler, HasGameRef<Ngai
 class InstructionsText extends PositionComponent with HasGameRef<NgaisCallGame> {
   @override
   Future<void> onLoad() async {
-    final regular = const TextStyle(color: Colors.white70, fontSize: 12);
-    final highlight = const TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold);
+    final regular = const TextStyle(color: Colors.white70, fontSize: 11);
+    final highlight = const TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold);
+    final wisdom = const TextStyle(color: Color(0xFF9C27B0), fontSize: 11, fontWeight: FontWeight.bold);
 
     add(
       TextComponent(
         text: 'WASD/Arrows: Move   |   Space: Call for Ngai\'s Protection',
         textRenderer: TextPaint(style: regular),
-        position: Vector2(10, game.size.y - 50)
+        position: Vector2(10, game.size.y - 70)
       )
     );
     
     add(
       TextComponent(
-        text: 'Gather green blessings (Thaay). Dispel red spirits (Ngoma).',
+        text: 'Green: Thaay (Blessings)  |  Purple: Proverbs (Wisdom)  |  Gold: Ancestors',
         textRenderer: TextPaint(style: highlight),
-        position: Vector2(10, game.size.y - 30)
+        position: Vector2(10, game.size.y - 55)
+      )
+    );
+
+    add(
+      TextComponent(
+        text: 'Collect Kikuyu wisdom in the sacred forest. Avoid red spirits.',
+        textRenderer: TextPaint(style: wisdom),
+        position: Vector2(10, game.size.y - 40)
       )
     );
   }
@@ -445,44 +844,74 @@ class InstructionsText extends PositionComponent with HasGameRef<NgaisCallGame> 
 class GameOverScreen extends PositionComponent with HasGameRef<NgaisCallGame> {
   @override
   Future<void> onLoad() async {
-    final style = TextStyle(fontSize: 32, color: BasicPalette.red.color, fontWeight: FontWeight.bold);
-    final text = 'Ngai\'s Call has Ended\nScore: ${game.score}\n\nPress \'R\' to try again';
-    final textPainter = TextPainter(
-      text: TextSpan(text: text, style: style),
+    final titleStyle = TextStyle(fontSize: 28, color: BasicPalette.red.color, fontWeight: FontWeight.bold);
+    final statsStyle = const TextStyle(fontSize: 16, color: Colors.white, fontWeight: FontWeight.bold);
+    final wisdomStyle = const TextStyle(fontSize: 14, color: Color(0xFF9C27B0), fontWeight: FontWeight.bold);
+    
+    final title = 'Ngai\'s Call has Ended';
+    final stats = 'Score: ${game.score}\nWisdom Collected: ${game.wisdom}';
+    final instruction = '\nPress \'R\' to seek Ngai\'s guidance again';
+    
+    final titlePainter = TextPainter(
+      text: TextSpan(text: title, style: titleStyle),
       textDirection: TextDirection.ltr,
       textAlign: TextAlign.center
     );
-    textPainter.layout();
+    titlePainter.layout();
 
-    final position = Vector2(
-      (game.size.x / 2) - (textPainter.width / 2),
-      (game.size.y / 2) - (textPainter.height / 2),
+    final statsPainter = TextPainter(
+      text: TextSpan(text: stats, style: statsStyle),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center
+    );
+    statsPainter.layout();
+
+    final instructionPainter = TextPainter(
+      text: TextSpan(text: instruction, style: wisdomStyle),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center
+    );
+    instructionPainter.layout();
+
+    final totalHeight = titlePainter.height + statsPainter.height + instructionPainter.height + 40;
+    final maxWidth = math.max(math.max(titlePainter.width, statsPainter.width), instructionPainter.width);
+
+    final backgroundPosition = Vector2(
+      (game.size.x / 2) - (maxWidth / 2) - 30,
+      (game.size.y / 2) - (totalHeight / 2) - 20,
     );
     
-    // Background
+    // Background with forest theme
     add(
       RectangleComponent(
-        position: position - Vector2.all(20),
-        size: Vector2(textPainter.width, textPainter.height) + Vector2.all(40),
-        paint: Paint()..color = Colors.black.withOpacity(0.7)
+        position: backgroundPosition,
+        size: Vector2(maxWidth + 60, totalHeight + 40),
+        paint: Paint()
+          ..shader = const LinearGradient(
+            colors: [Color(0xAA0D4F3C), Color(0xAA000000)],
+          ).createShader(Rect.fromLTWH(0, 0, maxWidth + 60, totalHeight + 40))
       )
     );
     
-    add(TextComponent(text: text, textRenderer: TextPaint(style: style), position: position));
-  }
-}
-
-class Background extends Component with HasGameRef<NgaisCallGame> {
-  @override
-  void render(Canvas canvas) {
-    final gameSize = gameRef.size;
-    final rect = Rect.fromLTWH(0, 0, gameSize.x, gameSize.y);
-    final paint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xFF1a237e), Color(0xFF000000)],
-      ).createShader(rect);
-    canvas.drawRect(rect, paint);
+    // Title
+    add(TextComponent(
+      text: title, 
+      textRenderer: TextPaint(style: titleStyle), 
+      position: Vector2((game.size.x / 2) - (titlePainter.width / 2), (game.size.y / 2) - (totalHeight / 2))
+    ));
+    
+    // Stats
+    add(TextComponent(
+      text: stats, 
+      textRenderer: TextPaint(style: statsStyle), 
+      position: Vector2((game.size.x / 2) - (statsPainter.width / 2), (game.size.y / 2) - (totalHeight / 2) + titlePainter.height + 20)
+    ));
+    
+    // Instruction
+    add(TextComponent(
+      text: instruction, 
+      textRenderer: TextPaint(style: wisdomStyle), 
+      position: Vector2((game.size.x / 2) - (instructionPainter.width / 2), (game.size.y / 2) - (totalHeight / 2) + titlePainter.height + statsPainter.height + 30)
+    ));
   }
 }
