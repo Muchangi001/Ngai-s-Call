@@ -1,5 +1,5 @@
 name: game001
-description: "A new Flutter project."
+description: "Welcome to Ngai's Call, a captivating 2D top-down game built with Flutter and the Flame engine. Embark on a spiritual journey through a vibrant forest, collecting ancient Kikuyu wisdom while evading the ominous red spirits that seek to thwart your path. Can you survive the trials and gather enough wisdom to honor the ancestors?"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
