@@ -19,6 +19,7 @@ void main() {
         overlayBuilderMap: {
           'mobileControls': (context, game) => MobileControlsOverlay(game: game as NgaisCallGame),
           'restartButton': (context, game) => RestartButtonOverlay(game: game as NgaisCallGame),
+          'wisdomMessage': (context, game) => WisdomMessageOverlay(game: game as NgaisCallGame),
         },
       ),
     ),
@@ -37,11 +38,12 @@ class GameConfig {
 }
 
 class _PlayerConfig {
-  final double speed = 250.0;
+  final double speed = 180.0;
   final double size = 15.0;
   final double protectionDuration = 3.0;
   final double protectionEnergyCost = 30.0;
   final double protectionCooldown = 2.0;
+  final double deathSkidDuration = 1.5;
 }
 
 class _EnemyConfig {
@@ -70,6 +72,7 @@ class _ProverbConfig {
   final int wisdomOnCollect = 1;
   final double energyOnCollect = 15.0;
   final int maxProverbs = 3;
+  final double messageDuration = 4.0;
 }
 
 class _AncestorConfig {
@@ -79,6 +82,7 @@ class _AncestorConfig {
   final double energyOnCollect = 40.0;
   final double blessingDuration = 8.0;
   final int maxAncestors = 1;
+  final double messageDuration = 5.0;
 }
 
 class _GameConfig {
@@ -107,6 +111,7 @@ class _TouchControlsConfig {
   final double buttonSize = 70.0;
   final double buttonMargin = 20.0;
   final double opacity = 0.6;
+  final double deadZone = 0.2;
 }
 
 class KikuyuWisdom {
@@ -130,6 +135,10 @@ class KikuyuWisdom {
     "Mount Kenya stands eternal",
     "The fig tree shelters all who seek",
     "Sacred groves hold ancient power",
+    "Listen to the whispers of the wind",
+    "The lion's strength comes from the pride",
+    "A single stick breaks, but many are strong",
+    "The wise man learns from the mistakes of others",
   ];
 
   static String getRandomProverb() => proverbs[math.Random().nextInt(proverbs.length)];
@@ -157,6 +166,9 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
   double messageTimer = 0;
   bool protectionOnCooldown = false;
   double protectionCooldownTimer = 0;
+
+  String? wisdomMessage;
+  double wisdomMessageTimer = 0;
 
   Vector2 joystickDelta = Vector2.zero();
   bool protectionButtonPressed = false;
@@ -349,6 +361,28 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     messageTimer = GameConfig.game.messageDuration;
   }
 
+  void showWisdomMessage(String message) {
+    wisdomMessage = message;
+    wisdomMessageTimer = GameConfig.proverb.messageDuration;
+    if (!kIsWeb) {
+      overlays.add('wisdomMessage');
+      Future.delayed(Duration(seconds: GameConfig.proverb.messageDuration.toInt()), () {
+        overlays.remove('wisdomMessage');
+      });
+    }
+  }
+
+  void showAncestorMessage(String message) {
+    wisdomMessage = message;
+    wisdomMessageTimer = GameConfig.ancestor.messageDuration;
+    if (!kIsWeb) {
+      overlays.add('wisdomMessage');
+      Future.delayed(Duration(seconds: GameConfig.ancestor.messageDuration.toInt()), () {
+        overlays.remove('wisdomMessage');
+      });
+    }
+  }
+
   void activateProtectionFromButton() {
     if (!protectionOnCooldown && ui.canUseEnergy(GameConfig.player.protectionEnergyCost)) {
       player.activateProtection();
@@ -392,6 +426,16 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
         currentMessage = null;
       }
     }
+
+    if (wisdomMessageTimer > 0) {
+      wisdomMessageTimer -= dt;
+      if (wisdomMessageTimer <= 0) {
+        wisdomMessage = null;
+        if (!kIsWeb) {
+          overlays.remove('wisdomMessage');
+        }
+      }
+    }
   }
 
   void onGameOver() {
@@ -418,6 +462,8 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     wisdom = 0;
     currentMessage = null;
     messageTimer = 0;
+    wisdomMessage = null;
+    wisdomMessageTimer = 0;
     protectionOnCooldown = false;
     protectionCooldownTimer = 0;
 
@@ -444,6 +490,44 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     }
 
     state = GameState.playing;
+  }
+}
+
+class WisdomMessageOverlay extends StatelessWidget {
+  final NgaisCallGame game;
+
+  const WisdomMessageOverlay({super.key, required this.game});
+
+  @override
+  Widget build(BuildContext context) {
+    if (game.wisdomMessage == null) return const SizedBox.shrink();
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 50,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFFFD700), width: 2),
+            ),
+            child: Text(
+              game.wisdomMessage!,
+              style: const TextStyle(
+                color: Color(0xFFFFD700),
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -604,7 +688,10 @@ class _JoystickAreaState extends State<JoystickArea> {
     final dy = (localPosition.dy - center).clamp(-center, center);
 
     setState(() => _knobPosition = Offset(dx, dy));
-    widget.game.joystickDelta = Vector2(dx / center, dy / center);
+    
+    final direction = Vector2(dx / center, dy / center);
+    widget.game.joystickDelta = direction;
+    widget.game.player.handleJoystickMovement(direction);
   }
 
   void _resetKnob() {
@@ -613,6 +700,7 @@ class _JoystickAreaState extends State<JoystickArea> {
       _isDragging = false;
     });
     widget.game.joystickDelta = Vector2.zero();
+    widget.game.player.handleJoystickMovement(Vector2.zero());
   }
 }
 
@@ -772,9 +860,12 @@ class Player extends PositionComponent with CollisionCallbacks {
   bool hasAncestorBlessing = false;
   bool isHitByEnemy = false;
   bool isInHideout = false;
+  bool isDead = false;
+  Vector2 deathVelocity = Vector2.zero();
 
   late Timer _protectionTimer;
   late Timer _ancestorBlessingTimer;
+  late Timer _deathSkidTimer;
   Vector2 _moveDirection = Vector2.zero();
 
   double life = GameConfig.game.initialLife;
@@ -783,6 +874,7 @@ class Player extends PositionComponent with CollisionCallbacks {
   Player() : super(size: Vector2.all(GameConfig.player.size * 2), anchor: Anchor.center) {
     _protectionTimer = Timer(GameConfig.player.protectionDuration, onTick: () => isProtected = false);
     _ancestorBlessingTimer = Timer(GameConfig.ancestor.blessingDuration, onTick: () => hasAncestorBlessing = false);
+    _deathSkidTimer = Timer(GameConfig.player.deathSkidDuration, onTick: () => isDead = false);
   }
 
   @override
@@ -799,12 +891,26 @@ class Player extends PositionComponent with CollisionCallbacks {
     hasAncestorBlessing = false;
     isHitByEnemy = false;
     isInHideout = false;
+    isDead = false;
+    _moveDirection = Vector2.zero();
+    deathVelocity = Vector2.zero();
     _protectionTimer.stop();
     _ancestorBlessingTimer.stop();
+    _deathSkidTimer.stop();
   }
 
   @override
   void render(Canvas canvas) {
+    if (isDead) {
+      final ghostPaint = Paint()
+        ..color = const Color(0xFF03A9F4).withOpacity(0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
+      canvas.drawCircle(Offset.zero, size.x / 2 + 5, ghostPaint);
+      canvas.drawCircle(Offset.zero, size.x / 2, ghostPaint);
+      return;
+    }
+
     Color baseColor = const Color(0xFF03A9F4);
     if (hasAncestorBlessing) baseColor = const Color(0xFFFFD700);
     if (isProtected) baseColor = const Color(0xFFFFC107);
@@ -825,24 +931,59 @@ class Player extends PositionComponent with CollisionCallbacks {
   @override
   void update(double dt) {
     super.update(dt);
+    
+    if (isDead) {
+      _deathSkidTimer.update(dt);
+      position += deathVelocity * dt;
+      deathVelocity *= 0.95;
+      return;
+    }
+
     if (isProtected) _protectionTimer.update(dt);
     if (hasAncestorBlessing) _ancestorBlessingTimer.update(dt);
 
     if (isHitByEnemy && !isProtected && !hasAncestorBlessing) {
       life = (life - GameConfig.game.lifeDrainRate * dt).clamp(0, maxLife);
       if (life <= 0) {
+        onDeath();
         (findGame() as NgaisCallGame).onGameOver();
       }
     }
 
-    final speed = hasAncestorBlessing ? GameConfig.player.speed * 1.5 : GameConfig.player.speed;
-    position += _moveDirection.normalized() * speed * dt;
+    if (_moveDirection != Vector2.zero()) {
+      final speed = hasAncestorBlessing ? GameConfig.player.speed * 1.3 : GameConfig.player.speed;
+      position += _moveDirection.normalized() * speed * dt;
+    }
 
     final gameRef = findGame();
     if (gameRef != null) {
       position.x = position.x.clamp(size.x / 2, gameRef.size.x - size.x / 2);
       position.y = position.y.clamp(size.y / 2, gameRef.size.y - size.y / 2);
     }
+  }
+
+  void onDeath() {
+    isDead = true;
+    deathVelocity = _moveDirection.normalized() * GameConfig.player.speed * 0.8;
+    _deathSkidTimer.start();
+  }
+
+  void handleJoystickMovement(Vector2 direction) {
+    if (direction.length > GameConfig.touchControls.deadZone) {
+      _moveDirection = direction;
+    } else {
+      _moveDirection = Vector2.zero();
+    }
+  }
+
+  void activateProtection() {
+    isProtected = true;
+    _protectionTimer.start();
+  }
+
+  void activateAncestorBlessing() {
+    hasAncestorBlessing = true;
+    _ancestorBlessingTimer.start();
   }
 
   @override
@@ -868,13 +1009,13 @@ class Player extends PositionComponent with CollisionCallbacks {
       gameRef.score += GameConfig.proverb.scoreOnCollect;
       gameRef.wisdom += GameConfig.proverb.wisdomOnCollect;
       gameRef.ui.addEnergy(GameConfig.proverb.energyOnCollect);
-      gameRef.showMessage((other as KikuyuProverb).proverb);
+      gameRef.showWisdomMessage((other as KikuyuProverb).proverb);
     } else if (other is AncestorSpirit) {
       other.removeFromParent();
       gameRef.score += GameConfig.ancestor.scoreOnCollect;
       gameRef.ui.addEnergy(GameConfig.ancestor.energyOnCollect);
       activateAncestorBlessing();
-      gameRef.showMessage((other as AncestorSpirit).saying);
+      gameRef.showAncestorMessage((other as AncestorSpirit).saying);
     } else if (other is Hideout) {
       isInHideout = true;
       gameRef.trapEnemiesInHideout(other as Hideout);
@@ -885,20 +1026,6 @@ class Player extends PositionComponent with CollisionCallbacks {
   void onCollisionEnd(PositionComponent other) {
     if (other is Enemy) isHitByEnemy = false;
     if (other is Hideout) isInHideout = false;
-  }
-
-  void handleJoystickMovement(Vector2 direction) {
-    _moveDirection = direction;
-  }
-
-  void activateProtection() {
-    isProtected = true;
-    _protectionTimer.start();
-  }
-
-  void activateAncestorBlessing() {
-    hasAncestorBlessing = true;
-    _ancestorBlessingTimer.start();
   }
 }
 
@@ -979,6 +1106,13 @@ class Blessing extends PositionComponent {
 
   @override
   void update(double dt) => _pulseTimer += dt;
+
+  @override
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    if (other is Player) {
+      removeFromParent();
+    }
+  }
 }
 
 class KikuyuProverb extends PositionComponent {
@@ -1010,6 +1144,17 @@ class KikuyuProverb extends PositionComponent {
 
   @override
   void update(double dt) => _glowTimer += dt;
+
+  @override
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    if (other is Player) {
+      final game = findGame() as NgaisCallGame?;
+      if (game != null) {
+        game.showWisdomMessage(proverb);
+        removeFromParent();
+      }
+    }
+  }
 }
 
 class AncestorSpirit extends PositionComponent {
@@ -1052,6 +1197,17 @@ class AncestorSpirit extends PositionComponent {
     final floatOffset = Vector2(0, math.sin(_floatTimer * 2) * 5);
     position = _originalPosition + floatOffset;
   }
+
+  @override
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    if (other is Player) {
+      final game = findGame() as NgaisCallGame?;
+      if (game != null) {
+        game.showAncestorMessage(saying);
+        removeFromParent();
+      }
+    }
+  }
 }
 
 class Hideout extends PositionComponent with HasGameRef<NgaisCallGame>, CollisionCallbacks {
@@ -1083,6 +1239,21 @@ class Hideout extends PositionComponent with HasGameRef<NgaisCallGame>, Collisio
 
   @override
   void update(double dt) => _pulseTimer += dt;
+
+  @override
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    if (other is Player) {
+      (other as Player).isInHideout = true;
+      (findGame() as NgaisCallGame).trapEnemiesInHideout(this);
+    }
+  }
+
+  @override
+  void onCollisionEnd(PositionComponent other) {
+    if (other is Player) {
+      (other as Player).isInHideout = false;
+    }
+  }
 }
 
 class SpiritualEnergyBar extends PositionComponent with HasGameRef<NgaisCallGame> {
