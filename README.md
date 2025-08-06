@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 Ngai's Call: A Journey of Kikuyu Wisdom
 
 Welcome to Ngai's Call, a captivating 2D top-down game built with Flutter and the Flame engine. Embark on a spiritual journey through a vibrant forest, collecting ancient Kikuyu wisdom while evading the ominous red spirits that seek to thwart your path. Can you survive the trials and gather enough wisdom to honor the ancestors?
@@ -77,6 +76,3 @@ Steps to Run
     (Ensure you have an Android emulator, iOS simulator, or a connected physical device.)
 
 Enjoy your journey in Ngai's Call!
-=======
-https://ngai-s-call-3978-ougqk6c-muchangi001.globeapp.dev/
->>>>>>> beaf6bf2b15172752f0a598e9d7d0925e268670c
