@@ -1,31 +1,45 @@
+import 'package:flame/experimental.dart';
 import 'package:flame/flame.dart';
 import 'package:flame/game.dart';
 import 'package:flame/components.dart';
-import 'package:flame/events.dart';
-import 'package:flame/palette.dart';
 import 'package:flame/collisions.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flame/geometry.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  Flame.device.setPortrait();
+  
+  // Force landscape orientation
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.landscapeLeft,
+    DeviceOrientation.landscapeRight,
+  ]);
+  
+  Flame.device.setLandscape();
+  Flame.device.fullScreen();
+  
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
       home: GameWidget(
         game: NgaisCallGame(),
         overlayBuilderMap: {
-          'mobileControls': (context, game) => MobileControlsOverlay(game: game as NgaisCallGame),
-          'restartButton': (context, game) => RestartButtonOverlay(game: game as NgaisCallGame),
-          'wisdomMessage': (context, game) => WisdomMessageOverlay(game: game as NgaisCallGame),
+          'mobileControls':
+              (context, game) => MobileControlsOverlay(game: game as NgaisCallGame),
+          'restartButton':
+              (context, game) => RestartButtonOverlay(game: game as NgaisCallGame),
+          'wisdomMessage':
+              (context, game) => WisdomMessageOverlay(game: game as NgaisCallGame),
         },
       ),
     ),
   );
 }
 
+// GameConfig and KikuyuWisdom classes remain unchanged
 class GameConfig {
   static final player = _PlayerConfig();
   static final enemy = _EnemyConfig();
@@ -35,6 +49,8 @@ class GameConfig {
   static final game = _GameConfig();
   static final hideout = _HideoutConfig();
   static final touchControls = _TouchControlsConfig();
+  static final powerUp = _PowerUpConfig();
+  static final artifact = _ArtifactConfig();
 }
 
 class _PlayerConfig {
@@ -47,13 +63,13 @@ class _PlayerConfig {
 }
 
 class _EnemyConfig {
-  final double speed = 90.0;
+  final double speed = 70.0;
   final double size = 12.0;
-  final double spawnInterval = 1.8;
+  final double spawnInterval = 2.2;
   final int scoreOnDestroy = 10;
   final double energyOnDestroy = 5.0;
-  final double detectionRadius = 180.0;
-  final double wanderingSpeed = 40.0;
+  final double detectionRadius = 120.0;
+  final double wanderingSpeed = 30.0;
   final int maxEnemies = 15;
 }
 
@@ -91,12 +107,13 @@ class _GameConfig {
   final int initialEnemyCount = 3;
   final double initialLife = 100.0;
   final double maxLife = 100.0;
-  final double lifeDrainRate = 15.0;
+  final double lifeDrainRate = 12.0;
   final int hideoutTrapScore = 50;
   final double hideoutTrapEnergy = 15.0;
   final double hideoutTrapRadius = 150.0;
   final double messageDuration = 3.0;
   final double gameStartDelay = 1.5;
+  final double mapExtensionWidth = 800.0;
 }
 
 class _HideoutConfig {
@@ -106,12 +123,29 @@ class _HideoutConfig {
 }
 
 class _TouchControlsConfig {
-  final double joystickSize = 120.0;
-  final double joystickKnobSize = 40.0;
-  final double buttonSize = 70.0;
-  final double buttonMargin = 20.0;
+  final double joystickSize = 100.0;
+  final double joystickKnobSize = 35.0;
+  final double buttonSize = 60.0;
+  final double buttonMargin = 15.0;
   final double opacity = 0.6;
   final double deadZone = 0.2;
+}
+
+class _PowerUpConfig {
+  final double size = 12.0;
+  final double spawnInterval = 15.0;
+  final double duration = 10.0;
+  final int maxPowerUps = 3;
+  final double speedBoostMultiplier = 1.5;
+  final double energyRegenRate = 5.0;
+}
+
+class _ArtifactConfig {
+  final double size = 10.0;
+  final double spawnInterval = 20.0;
+  final int maxArtifacts = 2;
+  final double scoreMultiplierDuration = 15.0;
+  final double scoreMultiplier = 2.0;
 }
 
 class KikuyuWisdom {
@@ -141,8 +175,19 @@ class KikuyuWisdom {
     "The wise man learns from the mistakes of others",
   ];
 
-  static String getRandomProverb() => proverbs[math.Random().nextInt(proverbs.length)];
-  static String getRandomAncestorSaying() => ancestorSayings[math.Random().nextInt(ancestorSayings.length)];
+  static final List<String> artifactNames = [
+    "Mau Mau Spear",
+    "Kikuyu Drum",
+    "Sacred Beads",
+    "Warrior Shield",
+  ];
+
+  static String getRandomProverb() =>
+      proverbs[math.Random().nextInt(proverbs.length)];
+  static String getRandomAncestorSaying() =>
+      ancestorSayings[math.Random().nextInt(ancestorSayings.length)];
+  static String getRandomArtifactName() =>
+      artifactNames[math.Random().nextInt(artifactNames.length)];
 }
 
 enum GameState { playing, paused, gameOver }
@@ -153,12 +198,15 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
   late Player player;
   late SpiritualEnergyBar ui;
   late ForestBackground forest;
+  late MiniMap miniMap;
 
   late Timer _enemySpawnTimer;
   late Timer _blessingSpawnTimer;
   late Timer _proverbSpawnTimer;
   late Timer _ancestorSpawnTimer;
   late Timer _hideoutSpawnTimer;
+  late Timer _powerUpSpawnTimer;
+  late Timer _artifactSpawnTimer;
 
   int score = 0;
   int wisdom = 0;
@@ -172,12 +220,62 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
 
   Vector2 joystickDelta = Vector2.zero();
   bool protectionButtonPressed = false;
+  double scoreMultiplier = 1.0;
+  double scoreMultiplierTimer = 0.0;
+
+  late Vector2 mapSize;
 
   @override
   Future<void> onLoad() async {
-    forest = ForestBackground();
-    add(forest);
+    // Wait for device to be ready and get actual screen size
+    await Future.delayed(Duration(milliseconds: 100));
+    
+    // Get the actual device screen size for landscape
+    mapSize = size.clone();
+    
+    // Ensure we have reasonable minimum size for landscape
+    if (mapSize.x < mapSize.y) {
+      // If somehow we're in portrait, swap dimensions
+      final temp = mapSize.x;
+      mapSize.x = mapSize.y;
+      mapSize.y = temp;
+    }
 
+    // Initialize world
+    world = World();
+    await add(world);
+
+    // Set up the camera to fill the entire screen
+    camera = CameraComponent.withFixedResolution(
+      width: mapSize.x,
+      height: mapSize.y,
+      world: world,
+    );
+    camera.viewfinder.anchor = Anchor.center;
+    await add(camera);
+
+    // Set initial camera bounds
+    camera.setBounds(
+      Rectangle.fromLTRB(0, 0, mapSize.x, mapSize.y),
+    );
+
+    // Initialize and add components to the world
+    forest = ForestBackground();
+    await world.add(forest);
+
+    player = Player();
+    await world.add(player);
+
+    // Add HUD components - these stay fixed on screen
+    ui = SpiritualEnergyBar();
+    await add(ui);
+
+    miniMap = MiniMap();
+    await add(miniMap);
+
+    await world.add(InstructionsText());
+
+    // Initialize timers
     _enemySpawnTimer = Timer(
       GameConfig.enemy.spawnInterval,
       onTick: spawnEnemy,
@@ -203,41 +301,58 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
       onTick: spawnHideout,
       repeat: true,
     );
+    _powerUpSpawnTimer = Timer(
+      GameConfig.powerUp.spawnInterval,
+      onTick: spawnPowerUp,
+      repeat: true,
+    );
+    _artifactSpawnTimer = Timer(
+      GameConfig.artifact.spawnInterval,
+      onTick: spawnArtifact,
+      repeat: true,
+    );
 
     if (!kIsWeb) {
       overlays.add('mobileControls');
     }
-
-    player = Player();
-    add(player);
-
-    ui = SpiritualEnergyBar();
-    add(ui);
 
     _startSpawning();
     for (int i = 0; i < GameConfig.game.initialEnemyCount; i++) {
       spawnEnemy();
     }
 
-    add(InstructionsText());
+    // Make camera follow the player
+    camera.follow(player);
   }
 
   void togglePause() {
     if (state == GameState.playing) {
       state = GameState.paused;
-      _enemySpawnTimer.pause();
-      _blessingSpawnTimer.pause();
-      _proverbSpawnTimer.pause();
-      _ancestorSpawnTimer.pause();
-      _hideoutSpawnTimer.pause();
+      _pauseTimers();
     } else if (state == GameState.paused) {
       state = GameState.playing;
-      _enemySpawnTimer.resume();
-      _blessingSpawnTimer.resume();
-      _proverbSpawnTimer.resume();
-      _ancestorSpawnTimer.resume();
-      _hideoutSpawnTimer.resume();
+      _resumeTimers();
     }
+  }
+
+  void _pauseTimers() {
+    _enemySpawnTimer.pause();
+    _blessingSpawnTimer.pause();
+    _proverbSpawnTimer.pause();
+    _ancestorSpawnTimer.pause();
+    _hideoutSpawnTimer.pause();
+    _powerUpSpawnTimer.pause();
+    _artifactSpawnTimer.pause();
+  }
+
+  void _resumeTimers() {
+    _enemySpawnTimer.resume();
+    _blessingSpawnTimer.resume();
+    _proverbSpawnTimer.resume();
+    _ancestorSpawnTimer.resume();
+    _hideoutSpawnTimer.resume();
+    _powerUpSpawnTimer.resume();
+    _artifactSpawnTimer.resume();
   }
 
   void _startSpawning() {
@@ -246,16 +361,18 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     _proverbSpawnTimer.start();
     _ancestorSpawnTimer.start();
     _hideoutSpawnTimer.start();
+    _powerUpSpawnTimer.start();
+    _artifactSpawnTimer.start();
   }
 
   @override
   void render(Canvas canvas) {
     super.render(canvas);
-    
+
     if (state == GameState.paused) {
       final paint = Paint()..color = Colors.black.withOpacity(0.5);
       canvas.drawRect(Rect.fromLTWH(0, 0, size.x, size.y), paint);
-      
+
       final text = TextSpan(
         text: 'PAUSED',
         style: TextStyle(
@@ -285,70 +402,113 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     Vector2 position;
 
     switch (edge) {
-      case 0: position = Vector2(math.Random().nextDouble() * size.x, 0); break;
-      case 1: position = Vector2(size.x, math.Random().nextDouble() * size.y); break;
-      case 2: position = Vector2(math.Random().nextDouble() * size.x, size.y); break;
-      default: position = Vector2(0, math.Random().nextDouble() * size.y); break;
+      case 0:
+        position = Vector2(math.Random().nextDouble() * mapSize.x, 0);
+        break;
+      case 1:
+        position = Vector2(mapSize.x, math.Random().nextDouble() * mapSize.y);
+        break;
+      case 2:
+        position = Vector2(math.Random().nextDouble() * mapSize.x, mapSize.y);
+        break;
+      default:
+        position = Vector2(0, math.Random().nextDouble() * mapSize.y);
+        break;
     }
-    add(Enemy(startPosition: position));
+    world.add(Enemy(startPosition: position));
   }
 
   void spawnBlessing() {
     if (children.whereType<Blessing>().length >= GameConfig.blessing.maxBlessings) return;
-    add(Blessing(
-      startPosition: Vector2(
-        math.Random().nextDouble() * size.x,
-        math.Random().nextDouble() * size.y,
+    world.add(
+      Blessing(
+        startPosition: Vector2(
+          math.Random().nextDouble() * mapSize.x,
+          math.Random().nextDouble() * mapSize.y,
+        ),
       ),
-    ));
+    );
   }
 
   void spawnProverb() {
     if (children.whereType<KikuyuProverb>().length >= GameConfig.proverb.maxProverbs) return;
-    add(KikuyuProverb(
-      startPosition: Vector2(
-        math.Random().nextDouble() * size.x,
-        math.Random().nextDouble() * size.y,
+    world.add(
+      KikuyuProverb(
+        startPosition: Vector2(
+          math.Random().nextDouble() * mapSize.x,
+          math.Random().nextDouble() * mapSize.y,
+        ),
       ),
-    ));
+    );
   }
 
   void spawnAncestor() {
     if (children.whereType<AncestorSpirit>().length >= GameConfig.ancestor.maxAncestors) return;
-    add(AncestorSpirit(
-      startPosition: Vector2(
-        math.Random().nextDouble() * size.x,
-        math.Random().nextDouble() * size.y,
+    world.add(
+      AncestorSpirit(
+        startPosition: Vector2(
+          math.Random().nextDouble() * mapSize.x,
+          math.Random().nextDouble() * mapSize.y,
+        ),
       ),
-    ));
+    );
   }
 
   void spawnHideout() {
     if (children.whereType<Hideout>().length >= GameConfig.hideout.maxHideouts) return;
     children.whereType<Hideout>().forEach((h) => h.removeFromParent());
-    add(Hideout(
-      startPosition: Vector2(
-        math.Random().nextDouble() * size.x,
-        math.Random().nextDouble() * size.y,
+    world.add(
+      Hideout(
+        startPosition: Vector2(
+          math.Random().nextDouble() * mapSize.x,
+          math.Random().nextDouble() * mapSize.y,
+        ),
       ),
-    ));
+    );
+  }
+
+  void spawnPowerUp() {
+    if (children.whereType<PowerUp>().length >= GameConfig.powerUp.maxPowerUps) return;
+    world.add(
+      PowerUp(
+        startPosition: Vector2(
+          math.Random().nextDouble() * mapSize.x,
+          math.Random().nextDouble() * mapSize.y,
+        ),
+        type: math.Random().nextBool() ? PowerUpType.speedBoost : PowerUpType.energyRegen,
+      ),
+    );
+  }
+
+  void spawnArtifact() {
+    if (children.whereType<MauMauArtifact>().length >= GameConfig.artifact.maxArtifacts) return;
+    world.add(
+      MauMauArtifact(
+        startPosition: Vector2(
+          math.Random().nextDouble() * mapSize.x,
+          math.Random().nextDouble() * mapSize.y,
+        ),
+      ),
+    );
   }
 
   void trapEnemiesInHideout(Hideout hideout) {
     int trappedCount = 0;
     final enemiesToRemove = <Enemy>[];
 
-    for (var component in children) {
-      if (component is Enemy && component.position.distanceTo(hideout.position) < GameConfig.game.hideoutTrapRadius) {
+    for (var component in world.children) {
+      if (component is Enemy &&
+          component.position.distanceTo(hideout.position) < GameConfig.game.hideoutTrapRadius) {
         enemiesToRemove.add(component);
       }
     }
 
     for (var enemy in enemiesToRemove) {
       enemy.removeFromParent();
-      score += GameConfig.game.hideoutTrapScore;
+      score += (GameConfig.game.hideoutTrapScore * scoreMultiplier).toInt();
       ui.addEnergy(GameConfig.game.hideoutTrapEnergy);
       trappedCount++;
+      showMessage("Played sound: Ambush!");
     }
 
     if (trappedCount > 0) {
@@ -366,9 +526,12 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     wisdomMessageTimer = GameConfig.proverb.messageDuration;
     if (!kIsWeb) {
       overlays.add('wisdomMessage');
-      Future.delayed(Duration(seconds: GameConfig.proverb.messageDuration.toInt()), () {
-        overlays.remove('wisdomMessage');
-      });
+      Future.delayed(
+        Duration(seconds: GameConfig.proverb.messageDuration.toInt()),
+        () {
+          overlays.remove('wisdomMessage');
+        },
+      );
     }
   }
 
@@ -377,9 +540,12 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     wisdomMessageTimer = GameConfig.ancestor.messageDuration;
     if (!kIsWeb) {
       overlays.add('wisdomMessage');
-      Future.delayed(Duration(seconds: GameConfig.ancestor.messageDuration.toInt()), () {
-        overlays.remove('wisdomMessage');
-      });
+      Future.delayed(
+        Duration(seconds: GameConfig.ancestor.messageDuration.toInt()),
+        () {
+          overlays.remove('wisdomMessage');
+        },
+      );
     }
   }
 
@@ -389,7 +555,25 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
       ui.useEnergy(GameConfig.player.protectionEnergyCost);
       protectionOnCooldown = true;
       protectionCooldownTimer = GameConfig.player.protectionCooldown;
+      showMessage("Played sound: Protection Activated!");
     }
+  }
+
+  void extendMap() {
+    mapSize.x += GameConfig.game.mapExtensionWidth;
+    forest.generateNewSection(mapSize.x - GameConfig.game.mapExtensionWidth);
+    showMessage("New forest area discovered!");
+    camera.setBounds(
+      Rectangle.fromLTRB(0, 0, mapSize.x, mapSize.y),
+    );
+  }
+
+  double getDynamicEnemySpawnInterval() {
+    return GameConfig.enemy.spawnInterval / (1 + score / 10000);
+  }
+
+  double getDynamicEnemySpeed() {
+    return GameConfig.enemy.speed * (1 + score / 20000);
   }
 
   @override
@@ -403,11 +587,21 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
       _proverbSpawnTimer.update(dt);
       _ancestorSpawnTimer.update(dt);
       _hideoutSpawnTimer.update(dt);
+      _powerUpSpawnTimer.update(dt);
+      _artifactSpawnTimer.update(dt);
 
       if (protectionOnCooldown) {
         protectionCooldownTimer -= dt;
         if (protectionCooldownTimer <= 0) {
           protectionOnCooldown = false;
+        }
+      }
+
+      if (scoreMultiplierTimer > 0) {
+        scoreMultiplierTimer -= dt;
+        if (scoreMultiplierTimer <= 0) {
+          scoreMultiplier = 1.0;
+          showMessage("Mau Mau Artifact effect ended!");
         }
       }
 
@@ -417,6 +611,10 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
 
       if (!kIsWeb && protectionButtonPressed) {
         activateProtectionFromButton();
+      }
+
+      if (player.position.x > mapSize.x - 100) {
+        extendMap();
       }
     }
 
@@ -440,16 +638,13 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
 
   void onGameOver() {
     state = GameState.gameOver;
-    _enemySpawnTimer.stop();
-    _blessingSpawnTimer.stop();
-    _proverbSpawnTimer.stop();
-    _ancestorSpawnTimer.stop();
-    _hideoutSpawnTimer.stop();
-    
+    _pauseTimers();
+
     if (!kIsWeb) {
       overlays.remove('mobileControls');
       overlays.add('restartButton');
     }
+    showMessage("Game Over! Final Score: $score");
   }
 
   void resetGame() {
@@ -466,29 +661,51 @@ class NgaisCallGame extends FlameGame with HasCollisionDetection {
     wisdomMessageTimer = 0;
     protectionOnCooldown = false;
     protectionCooldownTimer = 0;
+    scoreMultiplier = 1.0;
+    scoreMultiplierTimer = 0.0;
+    mapSize = size.clone();
 
-    children.whereType<Enemy>().forEach((e) => e.removeFromParent());
-    children.whereType<Blessing>().forEach((b) => b.removeFromParent());
-    children.whereType<KikuyuProverb>().forEach((p) => p.removeFromParent());
-    children.whereType<AncestorSpirit>().forEach((a) => a.removeFromParent());
-    children.whereType<Hideout>().forEach((h) => h.removeFromParent());
-    children.whereType<InstructionsText>().forEach((i) => i.removeFromParent());
+    // Clear world components
+    world.children.whereType<Enemy>().forEach((e) => e.removeFromParent());
+    world.children.whereType<Blessing>().forEach((b) => b.removeFromParent());
+    world.children.whereType<KikuyuProverb>().forEach((p) => p.removeFromParent());
+    world.children.whereType<AncestorSpirit>().forEach((a) => a.removeFromParent());
+    world.children.whereType<Hideout>().forEach((h) => h.removeFromParent());
+    world.children.whereType<PowerUp>().forEach((p) => p.removeFromParent());
+    world.children.whereType<MauMauArtifact>().forEach((a) => a.removeFromParent());
+    world.children.whereType<ForestBackground>().forEach((f) => f.removeFromParent());
+    world.children.whereType<Player>().forEach((p) => p.removeFromParent());
+    world.children.whereType<InstructionsText>().forEach((i) => i.removeFromParent());
+
+    // Clear screen-space components
     children.whereType<SpiritualEnergyBar>().forEach((u) => u.removeFromParent());
-    children.whereType<Player>().forEach((p) => p.removeFromParent());
+    children.whereType<MiniMap>().forEach((m) => m.removeFromParent());
+
+    // Reinitialize components
+    forest = ForestBackground();
+    world.add(forest);
 
     player = Player();
-    add(player);
+    world.add(player);
 
     ui = SpiritualEnergyBar();
     add(ui);
 
-    add(InstructionsText());
+    miniMap = MiniMap();
+    add(miniMap);
+
+    world.add(InstructionsText());
 
     _startSpawning();
     for (int i = 0; i < GameConfig.game.initialEnemyCount; i++) {
       spawnEnemy();
     }
 
+    camera.setBounds(
+      Rectangle.fromLTRB(0, 0, mapSize.x, mapSize.y),
+    );
+
+    camera.follow(player);
     state = GameState.playing;
   }
 }
@@ -503,23 +720,23 @@ class WisdomMessageOverlay extends StatelessWidget {
     if (game.wisdomMessage == null) return const SizedBox.shrink();
 
     return Positioned(
-      top: MediaQuery.of(context).padding.top + 50,
-      left: 0,
-      right: 0,
+      top: MediaQuery.of(context).padding.top + 10, // Align with safe area
+      left: 20,
+      right: 20,
       child: SafeArea(
         child: Center(
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.7),
-              borderRadius: BorderRadius.circular(20),
+              color: Colors.black.withOpacity(0.8),
+              borderRadius: BorderRadius.circular(15),
               border: Border.all(color: const Color(0xFFFFD700), width: 2),
             ),
             child: Text(
               game.wisdomMessage!,
               style: const TextStyle(
                 color: Color(0xFFFFD700),
-                fontSize: 16,
+                fontSize: 14,
                 fontWeight: FontWeight.bold,
               ),
               textAlign: TextAlign.center,
@@ -540,6 +757,7 @@ class MobileControlsOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(
       children: [
+        // Joystick - positioned in bottom left
         Positioned(
           left: GameConfig.touchControls.buttonMargin,
           bottom: GameConfig.touchControls.buttonMargin,
@@ -549,6 +767,7 @@ class MobileControlsOverlay extends StatelessWidget {
             knobSize: GameConfig.touchControls.joystickKnobSize,
           ),
         ),
+        // Protection button - positioned in bottom right
         Positioned(
           right: GameConfig.touchControls.buttonMargin,
           bottom: GameConfig.touchControls.buttonMargin,
@@ -557,8 +776,9 @@ class MobileControlsOverlay extends StatelessWidget {
             size: GameConfig.touchControls.buttonSize,
           ),
         ),
+        // Pause button - positioned in top right
         Positioned(
-          top: MediaQuery.of(context).padding.top + 10,
+          top: MediaQuery.of(context).padding.top + 5, // Adjusted for safe area
           right: 10,
           child: PauseButton(game: game),
         ),
@@ -577,15 +797,15 @@ class PauseButton extends StatelessWidget {
     return GestureDetector(
       onTap: () => game.togglePause(),
       child: Container(
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(20),
+          color: Colors.black.withOpacity(0.6),
+          borderRadius: BorderRadius.circular(15),
         ),
         child: Icon(
           game.state == GameState.paused ? Icons.play_arrow : Icons.pause,
           color: Colors.white,
-          size: 30,
+          size: 24,
         ),
       ),
     );
@@ -603,17 +823,17 @@ class RestartButtonOverlay extends StatelessWidget {
       child: GestureDetector(
         onTap: game.resetGame,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.7),
-            borderRadius: BorderRadius.circular(20),
+            color: Colors.black.withOpacity(0.8),
+            borderRadius: BorderRadius.circular(15),
             border: Border.all(color: const Color(0xFFFFD700), width: 2),
           ),
           child: const Text(
             'RESTART GAME',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 24,
+              fontSize: 20,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -661,6 +881,7 @@ class _JoystickAreaState extends State<JoystickArea> {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: Colors.black.withOpacity(GameConfig.touchControls.opacity),
+          border: Border.all(color: Colors.white.withOpacity(0.3), width: 2),
         ),
         child: Stack(
           children: [
@@ -672,7 +893,7 @@ class _JoystickAreaState extends State<JoystickArea> {
                 height: widget.knobSize,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Colors.white.withOpacity(_isDragging ? 0.9 : 0.6),
+                  color: Colors.white.withOpacity(_isDragging ? 0.9 : 0.7),
                 ),
               ),
             ),
@@ -688,7 +909,7 @@ class _JoystickAreaState extends State<JoystickArea> {
     final dy = (localPosition.dy - center).clamp(-center, center);
 
     setState(() => _knobPosition = Offset(dx, dy));
-    
+
     final direction = Vector2(dx / center, dy / center);
     widget.game.joystickDelta = direction;
     widget.game.player.handleJoystickMovement(direction);
@@ -742,14 +963,15 @@ class _ProtectionButtonState extends State<ProtectionButton> {
               : Colors.black.withOpacity(GameConfig.touchControls.opacity),
           border: Border.all(color: Colors.amber, width: 2.0),
         ),
-        child: const Center(
+        child: Center(
           child: Text(
-            'PROTECT',
+            'SHIELD',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 12,
+              fontSize: widget.size * 0.15,
               fontWeight: FontWeight.bold,
             ),
+            textAlign: TextAlign.center,
           ),
         ),
       ),
@@ -763,30 +985,46 @@ class ForestBackground extends Component with HasGameRef<NgaisCallGame> {
 
   @override
   Future<void> onLoad() async {
-    _generateTrees();
-    _generateSacredGroves();
+    _generateSection(0, gameRef.mapSize.x);
   }
 
-  void _generateTrees() {
+  void generateNewSection(double startX) {
     final random = math.Random();
     for (int i = 0; i < 15; i++) {
       trees.add(TreeSprite(
         position: Vector2(
-          random.nextDouble() * gameRef.size.x,
-          random.nextDouble() * gameRef.size.y,
+          startX + random.nextDouble() * GameConfig.game.mapExtensionWidth,
+          random.nextDouble() * gameRef.mapSize.y,
         ),
         size: random.nextDouble() * 30 + 20,
       ));
     }
-  }
-
-  void _generateSacredGroves() {
-    final random = math.Random();
     for (int i = 0; i < 3; i++) {
       groves.add(SacredGrove(
         position: Vector2(
-          random.nextDouble() * gameRef.size.x,
-          random.nextDouble() * gameRef.size.y,
+          startX + random.nextDouble() * GameConfig.game.mapExtensionWidth,
+          random.nextDouble() * gameRef.mapSize.y,
+        ),
+      ));
+    }
+  }
+
+  void _generateSection(double startX, double endX) {
+    final random = math.Random();
+    for (int i = 0; i < 30; i++) {
+      trees.add(TreeSprite(
+        position: Vector2(
+          startX + random.nextDouble() * (endX - startX),
+          random.nextDouble() * gameRef.mapSize.y,
+        ),
+        size: random.nextDouble() * 30 + 20,
+      ));
+    }
+    for (int i = 0; i < 6; i++) {
+      groves.add(SacredGrove(
+        position: Vector2(
+          startX + random.nextDouble() * (endX - startX),
+          random.nextDouble() * gameRef.mapSize.y,
         ),
       ));
     }
@@ -794,7 +1032,7 @@ class ForestBackground extends Component with HasGameRef<NgaisCallGame> {
 
   @override
   void render(Canvas canvas) {
-    final rect = Rect.fromLTWH(0, 0, gameRef.size.x, gameRef.size.y);
+    final rect = Rect.fromLTWH(0, 0, gameRef.mapSize.x, gameRef.mapSize.y);
     final paint = Paint()
       ..shader = const LinearGradient(
         begin: Alignment.topCenter,
@@ -803,8 +1041,12 @@ class ForestBackground extends Component with HasGameRef<NgaisCallGame> {
       ).createShader(rect);
     canvas.drawRect(rect, paint);
 
-    for (final grove in groves) grove.render(canvas);
-    for (final tree in trees) tree.render(canvas);
+    for (final grove in groves) {
+      grove.render(canvas);
+    }
+    for (final tree in trees) {
+      tree.render(canvas);
+    }
   }
 }
 
@@ -833,8 +1075,16 @@ class TreeSprite {
     );
 
     final lightFoliage = Paint()..color = const Color(0xFF4CAF50);
-    canvas.drawCircle(Offset(position.x - size * 0.1, position.y - size * 0.3), size * 0.15, lightFoliage);
-    canvas.drawCircle(Offset(position.x + size * 0.1, position.y - size * 0.1), size * 0.12, lightFoliage);
+    canvas.drawCircle(
+      Offset(position.x - size * 0.1, position.y - size * 0.3),
+      size * 0.15,
+      lightFoliage,
+    );
+    canvas.drawCircle(
+      Offset(position.x + size * 0.1, position.y - size * 0.1),
+      size * 0.12,
+      lightFoliage,
+    );
   }
 }
 
@@ -855,26 +1105,278 @@ class SacredGrove {
   }
 }
 
-class Player extends PositionComponent with CollisionCallbacks {
+enum PowerUpType { speedBoost, energyRegen }
+
+class PowerUp extends PositionComponent with HasGameRef<NgaisCallGame>, CollisionCallbacks {
+  final Vector2 startPosition;
+  final PowerUpType type;
+  double _pulseTimer = 0;
+
+  PowerUp({required this.startPosition, required this.type})
+      : super(
+          size: Vector2.all(GameConfig.powerUp.size * 2),
+          anchor: Anchor.center,
+        );
+
+  @override
+  Future<void> onLoad() async {
+    position = startPosition;
+    add(CircleHitbox());
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final color = type == PowerUpType.speedBoost ? const Color(0xFF2196F3) : const Color(0xFFFFEB3B);
+    final pulseEffect = (math.sin(_pulseTimer * 4) * 0.2 + 1.0);
+
+    canvas.drawCircle(
+      Offset.zero,
+      (size.x / 2) * pulseEffect + 3,
+      Paint()..color = color.withOpacity(0.3 * pulseEffect),
+    );
+    canvas.drawCircle(Offset.zero, size.x / 2, Paint()..color = color);
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 3,
+      Paint()..color = color.withOpacity(0.7),
+    );
+  }
+
+  @override
+  void update(double dt) => _pulseTimer += dt;
+
+  @override
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    if (other is Player) {
+      final game = findGame() as NgaisCallGame?;
+      if (game != null) {
+        if (type == PowerUpType.speedBoost) {
+          game.player.activateSpeedBoost();
+          game.showMessage("Played sound: Speed Boost!");
+        } else {
+          game.player.activateEnergyRegen();
+          game.showMessage("Played sound: Energy Regen!");
+        }
+        removeFromParent();
+      }
+    }
+  }
+}
+
+class MauMauArtifact extends PositionComponent with HasGameRef<NgaisCallGame>, CollisionCallbacks {
+  final Vector2 startPosition;
+  final String name = KikuyuWisdom.getRandomArtifactName();
+  double _glowTimer = 0;
+
+  MauMauArtifact({required this.startPosition})
+      : super(
+          size: Vector2.all(GameConfig.artifact.size * 2),
+          anchor: Anchor.center,
+        );
+
+  @override
+  Future<void> onLoad() async {
+    position = startPosition;
+    add(CircleHitbox());
+  }
+
+  @override
+  void render(Canvas canvas) {
+    final artifactPaint = Paint()..color = const Color(0xFF795548);
+    final glowEffect = (math.sin(_glowTimer * 3) * 0.3 + 0.7);
+
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2 + 6,
+      Paint()..color = artifactPaint.color.withOpacity(0.2 * glowEffect),
+    );
+    canvas.drawCircle(Offset.zero, size.x / 2, artifactPaint);
+
+    final symbolPaint = Paint()..color = const Color(0xFFBCAAA4);
+    canvas.drawRect(
+      Rect.fromCenter(
+        center: Offset(0, 0),
+        width: size.x / 3,
+        height: size.x / 3,
+      ),
+      symbolPaint,
+    );
+  }
+
+  @override
+  void update(double dt) => _glowTimer += dt;
+
+  @override
+  void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
+    if (other is Player) {
+      final game = findGame() as NgaisCallGame?;
+      if (game != null) {
+        game.scoreMultiplier = GameConfig.artifact.scoreMultiplier;
+        game.scoreMultiplierTimer = GameConfig.artifact.scoreMultiplierDuration;
+        game.showMessage("Collected $name! Score multiplier activated!");
+        removeFromParent();
+      }
+    }
+  }
+}
+
+class MiniMap extends PositionComponent with HasGameRef<NgaisCallGame> {
+  @override
+  bool get isHud => true; // Ensure this is rendered in screen space
+
+  @override
+  void render(Canvas canvas) {
+    final miniMapWidth = 120.0;
+    final miniMapHeight = 80.0;
+    final scale = miniMapWidth / gameRef.mapSize.x;
+
+    // Position minimap in top-right corner, below safe area and pause button
+    final safeAreaTop = gameRef.canvasSize.y * 0.05; // 5% of screen height for safe area
+    final mapX = gameRef.size.x - miniMapWidth - 15;
+    final mapY = safeAreaTop + 10; // Position below safe area
+
+    final bgPaint = Paint()..color = Colors.black.withOpacity(0.7);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(mapX, mapY, miniMapWidth, miniMapHeight),
+        const Radius.circular(8),
+      ),
+      bgPaint,
+    );
+
+    // Draw border
+    final borderPaint = Paint()
+      ..color = Colors.white.withOpacity(0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(mapX, mapY, miniMapWidth, miniMapHeight),
+        const Radius.circular(8),
+      ),
+      borderPaint,
+    );
+
+    // Draw player
+    final playerPaint = Paint()..color = const Color(0xFF03A9F4);
+    canvas.drawCircle(
+      Offset(
+        gameRef.player.position.x * scale + mapX,
+        gameRef.player.position.y * scale + mapY,
+      ),
+      3,
+      playerPaint,
+    );
+
+    // Draw enemies
+    final enemyPaint = Paint()..color = const Color(0xFFD32F2F);
+    for (var enemy in gameRef.world.children.whereType<Enemy>()) {
+      canvas.drawCircle(
+        Offset(
+          enemy.position.x * scale + mapX,
+          enemy.position.y * scale + mapY,
+        ),
+        2,
+        enemyPaint,
+      );
+    }
+
+    // Draw collectibles
+    final blessingPaint = Paint()..color = const Color(0xFF4CAF50);
+    for (var blessing in gameRef.world.children.whereType<Blessing>()) {
+      canvas.drawCircle(
+        Offset(
+          blessing.position.x * scale + mapX,
+          blessing.position.y * scale + mapY,
+        ),
+        1.5,
+        blessingPaint,
+      );
+    }
+
+    final proverbPaint = Paint()..color = const Color(0xFF9C27B0);
+    for (var proverb in gameRef.world.children.whereType<KikuyuProverb>()) {
+      canvas.drawCircle(
+        Offset(
+          proverb.position.x * scale + mapX,
+          proverb.position.y * scale + mapY,
+        ),
+        1.5,
+        proverbPaint,
+      );
+    }
+
+    final ancestorPaint = Paint()..color = const Color(0xFFFFD700);
+    for (var ancestor in gameRef.world.children.whereType<AncestorSpirit>()) {
+      canvas.drawCircle(
+        Offset(
+          ancestor.position.x * scale + mapX,
+          ancestor.position.y * scale + mapY,
+        ),
+        2,
+        ancestorPaint,
+      );
+    }
+
+    final hideoutPaint = Paint()..color = const Color(0xFF3E2723);
+    for (var hideout in gameRef.world.children.whereType<Hideout>()) {
+      canvas.drawCircle(
+        Offset(
+          hideout.position.x * scale + mapX,
+          hideout.position.y * scale + mapY,
+        ),
+        2,
+        hideoutPaint,
+      );
+    }
+  }
+}
+
+class Player extends PositionComponent with CollisionCallbacks, HasGameRef<NgaisCallGame> {
   bool isProtected = false;
   bool hasAncestorBlessing = false;
   bool isHitByEnemy = false;
   bool isInHideout = false;
   bool isDead = false;
   Vector2 deathVelocity = Vector2.zero();
+  bool hasSpeedBoost = false;
+  bool hasEnergyRegen = false;
 
   late Timer _protectionTimer;
   late Timer _ancestorBlessingTimer;
   late Timer _deathSkidTimer;
+  late Timer _speedBoostTimer;
+  late Timer _energyRegenTimer;
   Vector2 _moveDirection = Vector2.zero();
 
   double life = GameConfig.game.initialLife;
   final double maxLife = GameConfig.game.maxLife;
 
-  Player() : super(size: Vector2.all(GameConfig.player.size * 2), anchor: Anchor.center) {
-    _protectionTimer = Timer(GameConfig.player.protectionDuration, onTick: () => isProtected = false);
-    _ancestorBlessingTimer = Timer(GameConfig.ancestor.blessingDuration, onTick: () => hasAncestorBlessing = false);
-    _deathSkidTimer = Timer(GameConfig.player.deathSkidDuration, onTick: () => isDead = false);
+  Player()
+      : super(
+          size: Vector2.all(GameConfig.player.size * 2),
+          anchor: Anchor.center,
+        ) {
+    _protectionTimer = Timer(
+      GameConfig.player.protectionDuration,
+      onTick: () => isProtected = false,
+    );
+    _ancestorBlessingTimer = Timer(
+      GameConfig.ancestor.blessingDuration,
+      onTick: () => hasAncestorBlessing = false,
+    );
+    _deathSkidTimer = Timer(
+      GameConfig.player.deathSkidDuration,
+      onTick: () => isDead = false,
+    );
+    _speedBoostTimer = Timer(
+      GameConfig.powerUp.duration,
+      onTick: () => hasSpeedBoost = false,
+    );
+    _energyRegenTimer = Timer(
+      GameConfig.powerUp.duration,
+      onTick: () => hasEnergyRegen = false,
+    );
   }
 
   @override
@@ -884,19 +1386,22 @@ class Player extends PositionComponent with CollisionCallbacks {
   }
 
   void reset() {
-    final gameRef = findGame();
-    if (gameRef != null) position = gameRef.size / 2;
+    position = gameRef.mapSize / 2;
     life = GameConfig.game.initialLife;
     isProtected = false;
     hasAncestorBlessing = false;
     isHitByEnemy = false;
     isInHideout = false;
     isDead = false;
+    hasSpeedBoost = false;
+    hasEnergyRegen = false;
     _moveDirection = Vector2.zero();
     deathVelocity = Vector2.zero();
     _protectionTimer.stop();
     _ancestorBlessingTimer.stop();
     _deathSkidTimer.stop();
+    _speedBoostTimer.stop();
+    _energyRegenTimer.stop();
   }
 
   @override
@@ -915,23 +1420,37 @@ class Player extends PositionComponent with CollisionCallbacks {
     if (hasAncestorBlessing) baseColor = const Color(0xFFFFD700);
     if (isProtected) baseColor = const Color(0xFFFFC107);
     if (isHitByEnemy) baseColor = Colors.red;
+    if (hasSpeedBoost) baseColor = const Color(0xFF2196F3);
+    if (hasEnergyRegen) baseColor = const Color(0xFFFFEB3B);
 
     final paint = Paint()..color = baseColor;
-    final glowOpacity = (isProtected || hasAncestorBlessing) ? 0.6 : 0.3;
+    final glowOpacity = (isProtected || hasAncestorBlessing || hasSpeedBoost || hasEnergyRegen) ? 0.6 : 0.3;
 
     if (hasAncestorBlessing) {
-      canvas.drawCircle(Offset.zero, size.x / 2 + 8, Paint()..color = const Color(0xFFFFD700).withOpacity(0.4));
+      canvas.drawCircle(
+        Offset.zero,
+        size.x / 2 + 8,
+        Paint()..color = const Color(0xFFFFD700).withOpacity(0.4),
+      );
     }
 
-    canvas.drawCircle(Offset.zero, size.x / 2 + 3, Paint()..color = paint.color.withOpacity(glowOpacity));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2 + 3,
+      Paint()..color = paint.color.withOpacity(glowOpacity),
+    );
     canvas.drawCircle(Offset.zero, size.x / 2, paint);
-    canvas.drawCircle(Offset.zero, size.x / 3, Paint()..color = Colors.white.withOpacity(0.7));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 3,
+      Paint()..color = Colors.white.withOpacity(0.7),
+    );
   }
 
   @override
   void update(double dt) {
     super.update(dt);
-    
+
     if (isDead) {
       _deathSkidTimer.update(dt);
       position += deathVelocity * dt;
@@ -941,31 +1460,38 @@ class Player extends PositionComponent with CollisionCallbacks {
 
     if (isProtected) _protectionTimer.update(dt);
     if (hasAncestorBlessing) _ancestorBlessingTimer.update(dt);
+    if (hasSpeedBoost) _speedBoostTimer.update(dt);
+    if (hasEnergyRegen) {
+      _energyRegenTimer.update(dt);
+      gameRef.ui.addEnergy(GameConfig.powerUp.energyRegenRate * dt);
+    }
 
     if (isHitByEnemy && !isProtected && !hasAncestorBlessing) {
       life = (life - GameConfig.game.lifeDrainRate * dt).clamp(0, maxLife);
       if (life <= 0) {
         onDeath();
-        (findGame() as NgaisCallGame).onGameOver();
+        gameRef.onGameOver();
       }
     }
 
     if (_moveDirection != Vector2.zero()) {
-      final speed = hasAncestorBlessing ? GameConfig.player.speed * 1.3 : GameConfig.player.speed;
+      final speed = hasSpeedBoost
+          ? GameConfig.player.speed * GameConfig.powerUp.speedBoostMultiplier
+          : hasAncestorBlessing
+              ? GameConfig.player.speed * 1.3
+              : GameConfig.player.speed;
       position += _moveDirection.normalized() * speed * dt;
     }
 
-    final gameRef = findGame();
-    if (gameRef != null) {
-      position.x = position.x.clamp(size.x / 2, gameRef.size.x - size.x / 2);
-      position.y = position.y.clamp(size.y / 2, gameRef.size.y - size.y / 2);
-    }
+    position.x = position.x.clamp(size.x / 2, gameRef.mapSize.x - size.x / 2);
+    position.y = position.y.clamp(size.y / 2, gameRef.mapSize.y - size.y / 2);
   }
 
   void onDeath() {
     isDead = true;
     deathVelocity = _moveDirection.normalized() * GameConfig.player.speed * 0.8;
     _deathSkidTimer.start();
+    gameRef.showMessage("Played sound: Player Death!");
   }
 
   void handleJoystickMovement(Vector2 direction) {
@@ -986,39 +1512,58 @@ class Player extends PositionComponent with CollisionCallbacks {
     _ancestorBlessingTimer.start();
   }
 
+  void activateSpeedBoost() {
+    hasSpeedBoost = true;
+    _speedBoostTimer.start();
+  }
+
+  void activateEnergyRegen() {
+    hasEnergyRegen = true;
+    _energyRegenTimer.start();
+  }
+
   @override
   void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
-    final gameRef = findGame() as NgaisCallGame?;
-    if (gameRef == null) return;
+    final game = findGame() as NgaisCallGame?;
+    if (game == null) return;
 
     if (other is Enemy) {
       if (isProtected || hasAncestorBlessing) {
         other.removeFromParent();
-        gameRef.score += GameConfig.enemy.scoreOnDestroy;
-        gameRef.ui.addEnergy(GameConfig.enemy.energyOnDestroy);
-        if (hasAncestorBlessing) gameRef.score += GameConfig.enemy.scoreOnDestroy;
-      } else {
+        game.score += (GameConfig.enemy.scoreOnDestroy * game.scoreMultiplier).toInt();
+        game.ui.addEnergy(GameConfig.enemy.energyOnDestroy);
+        if (hasAncestorBlessing)
+          game.score += (GameConfig.enemy.scoreOnDestroy * game.scoreMultiplier).toInt();
+        game.showMessage("Played sound: Enemy Defeated!");
+      } else if (!isHitByEnemy) {
         isHitByEnemy = true;
       }
     } else if (other is Blessing) {
       other.removeFromParent();
-      gameRef.score += GameConfig.blessing.scoreOnCollect;
-      gameRef.ui.addEnergy(GameConfig.blessing.energyOnCollect);
+      game.score += (GameConfig.blessing.scoreOnCollect * game.scoreMultiplier).toInt();
+      game.ui.addEnergy(GameConfig.blessing.energyOnCollect);
+      game.showMessage("Played sound: Blessing Collected!");
     } else if (other is KikuyuProverb) {
       other.removeFromParent();
-      gameRef.score += GameConfig.proverb.scoreOnCollect;
-      gameRef.wisdom += GameConfig.proverb.wisdomOnCollect;
-      gameRef.ui.addEnergy(GameConfig.proverb.energyOnCollect);
-      gameRef.showWisdomMessage((other as KikuyuProverb).proverb);
+      game.score += (GameConfig.proverb.scoreOnCollect * game.scoreMultiplier).toInt();
+      game.wisdom += GameConfig.proverb.wisdomOnCollect;
+      game.ui.addEnergy(GameConfig.proverb.energyOnCollect);
+      game.showWisdomMessage((other).proverb);
+      game.showMessage("Played sound: Proverb Collected!");
     } else if (other is AncestorSpirit) {
       other.removeFromParent();
-      gameRef.score += GameConfig.ancestor.scoreOnCollect;
-      gameRef.ui.addEnergy(GameConfig.ancestor.energyOnCollect);
+      game.score += (GameConfig.ancestor.scoreOnCollect * game.scoreMultiplier).toInt();
+      game.ui.addEnergy(GameConfig.ancestor.energyOnCollect);
       activateAncestorBlessing();
-      gameRef.showAncestorMessage((other as AncestorSpirit).saying);
+      game.showAncestorMessage((other).saying);
+      game.showMessage("Played sound: Ancestor Collected!");
     } else if (other is Hideout) {
       isInHideout = true;
-      gameRef.trapEnemiesInHideout(other as Hideout);
+      game.trapEnemiesInHideout(other);
+    } else if (other is PowerUp) {
+      other.removeFromParent();
+    } else if (other is MauMauArtifact) {
+      other.removeFromParent();
     }
   }
 
@@ -1034,7 +1579,11 @@ class Enemy extends PositionComponent with HasGameRef<NgaisCallGame>, CollisionC
   Vector2 _currentWaypoint = Vector2.zero();
   final math.Random _random = math.Random();
 
-  Enemy({required this.startPosition}) : super(size: Vector2.all(GameConfig.enemy.size * 2), anchor: Anchor.center);
+  Enemy({required this.startPosition})
+      : super(
+          size: Vector2.all(GameConfig.player.size * 2),
+          anchor: Anchor.center,
+        );
 
   @override
   Future<void> onLoad() async {
@@ -1045,35 +1594,48 @@ class Enemy extends PositionComponent with HasGameRef<NgaisCallGame>, CollisionC
 
   void _pickNewWaypoint() {
     _currentWaypoint = Vector2(
-      _random.nextDouble() * game.size.x,
-      _random.nextDouble() * game.size.y,
+      _random.nextDouble() * gameRef.mapSize.x,
+      _random.nextDouble() * gameRef.mapSize.y,
     );
   }
 
   @override
   void render(Canvas canvas) {
     final enemyPaint = Paint()..color = const Color(0xFFD32F2F);
-    canvas.drawCircle(Offset.zero, size.x / 2 + 4, Paint()..color = enemyPaint.color.withOpacity(0.4));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2 + 4,
+      Paint()..color = enemyPaint.color.withOpacity(0.4),
+    );
     canvas.drawCircle(Offset.zero, size.x / 2, enemyPaint);
-    canvas.drawCircle(Offset.zero, size.x / 4, Paint()..color = const Color(0xFF8B0000));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 4,
+      Paint()..color = const Color(0xFF8B0000),
+    );
   }
 
   @override
   void update(double dt) {
     super.update(dt);
-    if (game.state != GameState.playing) return;
+    if (gameRef.state != GameState.playing) return;
 
-    final playerPosition = game.player.position;
+    final playerPosition = gameRef.player.position;
     final distanceToPlayer = position.distanceTo(playerPosition);
+
+    final dynamicSpeed = gameRef.getDynamicEnemySpeed();
 
     if (distanceToPlayer < GameConfig.enemy.detectionRadius) {
       final direction = (playerPosition - position).normalized();
-      position += direction * GameConfig.enemy.speed * dt;
+      position += direction * dynamicSpeed * dt;
     } else {
       if (position.distanceTo(_currentWaypoint) < 5) _pickNewWaypoint();
       final direction = (_currentWaypoint - position).normalized();
       position += direction * GameConfig.enemy.wanderingSpeed * dt;
     }
+
+    position.x = position.x.clamp(size.x / 2, gameRef.mapSize.x - size.x / 2);
+    position.y = position.y.clamp(size.y / 2, gameRef.mapSize.y - size.y / 2);
   }
 
   @override
@@ -1082,11 +1644,15 @@ class Enemy extends PositionComponent with HasGameRef<NgaisCallGame>, CollisionC
   }
 }
 
-class Blessing extends PositionComponent {
+class Blessing extends PositionComponent with CollisionCallbacks {
   final Vector2 startPosition;
   double _pulseTimer = 0;
 
-  Blessing({required this.startPosition}) : super(size: Vector2.all(GameConfig.blessing.size * 2), anchor: Anchor.center);
+  Blessing({required this.startPosition})
+      : super(
+          size: Vector2.all(GameConfig.blessing.size * 2),
+          anchor: Anchor.center,
+        );
 
   @override
   Future<void> onLoad() async {
@@ -1099,9 +1665,17 @@ class Blessing extends PositionComponent {
     final blessingPaint = Paint()..color = const Color(0xFF4CAF50);
     final pulseEffect = (math.sin(_pulseTimer * 4) * 0.2 + 1.0);
 
-    canvas.drawCircle(Offset.zero, (size.x / 2) * pulseEffect + 3, Paint()..color = blessingPaint.color.withOpacity(0.3 * pulseEffect));
+    canvas.drawCircle(
+      Offset.zero,
+      (size.x / 2) * pulseEffect + 3,
+      Paint()..color = blessingPaint.color.withOpacity(0.3 * pulseEffect),
+    );
     canvas.drawCircle(Offset.zero, size.x / 2, blessingPaint);
-    canvas.drawCircle(Offset.zero, size.x / 3, Paint()..color = const Color(0xFF81C784));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 3,
+      Paint()..color = const Color(0xFF81C784),
+    );
   }
 
   @override
@@ -1115,12 +1689,16 @@ class Blessing extends PositionComponent {
   }
 }
 
-class KikuyuProverb extends PositionComponent {
+class KikuyuProverb extends PositionComponent with CollisionCallbacks {
   final Vector2 startPosition;
   final String proverb = KikuyuWisdom.getRandomProverb();
   double _glowTimer = 0;
 
-  KikuyuProverb({required this.startPosition}) : super(size: Vector2.all(GameConfig.proverb.size * 2), anchor: Anchor.center);
+  KikuyuProverb({required this.startPosition})
+      : super(
+          size: Vector2.all(GameConfig.proverb.size * 2),
+          anchor: Anchor.center,
+        );
 
   @override
   Future<void> onLoad() async {
@@ -1133,7 +1711,11 @@ class KikuyuProverb extends PositionComponent {
     final proverbPaint = Paint()..color = const Color(0xFF9C27B0);
     final glowEffect = (math.sin(_glowTimer * 3) * 0.3 + 0.7);
 
-    canvas.drawCircle(Offset.zero, size.x / 2 + 6, Paint()..color = proverbPaint.color.withOpacity(0.2 * glowEffect));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2 + 6,
+      Paint()..color = proverbPaint.color.withOpacity(0.2 * glowEffect),
+    );
     canvas.drawCircle(Offset.zero, size.x / 2, proverbPaint);
 
     final symbolPaint = Paint()..color = const Color(0xFFE1BEE7);
@@ -1148,22 +1730,22 @@ class KikuyuProverb extends PositionComponent {
   @override
   void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
     if (other is Player) {
-      final game = findGame() as NgaisCallGame?;
-      if (game != null) {
-        game.showWisdomMessage(proverb);
-        removeFromParent();
-      }
+      removeFromParent();
     }
   }
 }
 
-class AncestorSpirit extends PositionComponent {
+class AncestorSpirit extends PositionComponent with CollisionCallbacks {
   final Vector2 startPosition;
   final String saying = KikuyuWisdom.getRandomAncestorSaying();
   double _floatTimer = 0;
   late Vector2 _originalPosition;
 
-  AncestorSpirit({required this.startPosition}) : super(size: Vector2.all(GameConfig.ancestor.size * 2), anchor: Anchor.center);
+  AncestorSpirit({required this.startPosition})
+      : super(
+          size: Vector2.all(GameConfig.ancestor.size * 2),
+          anchor: Anchor.center,
+        );
 
   @override
   Future<void> onLoad() async {
@@ -1177,15 +1759,22 @@ class AncestorSpirit extends PositionComponent {
     final ancestorPaint = Paint()..color = const Color(0xFFFFD700);
     final floatEffect = math.sin(_floatTimer * 2) * 0.3 + 1.0;
 
-    canvas.drawCircle(Offset.zero, (size.x / 2 + 10) * floatEffect, Paint()..color = ancestorPaint.color.withOpacity(0.15));
-    canvas.drawCircle(Offset.zero, size.x / 2, Paint()
-      ..color = ancestorPaint.color.withOpacity(0.8)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3,
+    canvas.drawCircle(
+      Offset.zero,
+      (size.x / 2 + 10) * floatEffect,
+      Paint()..color = ancestorPaint.color.withOpacity(0.15),
+    );
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2,
+      Paint()
+        ..color = ancestorPaint.color.withOpacity(0.8)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3,
     );
     canvas.drawCircle(Offset.zero, size.x / 3, ancestorPaint);
 
-    final symbolPaint = Paint()..color = const Color(0xFFFFFFFF);
+    final symbolPaint = Paint()..color = const Color(0xFFFFFF);
     canvas.drawCircle(Offset(0, -size.y / 4), 3, symbolPaint);
     canvas.drawCircle(Offset(-size.x / 4, size.y / 6), 3, symbolPaint);
     canvas.drawCircle(Offset(size.x / 4, size.y / 6), 3, symbolPaint);
@@ -1201,11 +1790,7 @@ class AncestorSpirit extends PositionComponent {
   @override
   void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
     if (other is Player) {
-      final game = findGame() as NgaisCallGame?;
-      if (game != null) {
-        game.showAncestorMessage(saying);
-        removeFromParent();
-      }
+      removeFromParent();
     }
   }
 }
@@ -1214,7 +1799,11 @@ class Hideout extends PositionComponent with HasGameRef<NgaisCallGame>, Collisio
   final Vector2 startPosition;
   double _pulseTimer = 0;
 
-  Hideout({required this.startPosition}) : super(size: Vector2.all(GameConfig.hideout.size * 2), anchor: Anchor.center);
+  Hideout({required this.startPosition})
+      : super(
+          size: Vector2.all(GameConfig.hideout.size * 2),
+          anchor: Anchor.center,
+        );
 
   @override
   Future<void> onLoad() async {
@@ -1227,12 +1816,20 @@ class Hideout extends PositionComponent with HasGameRef<NgaisCallGame>, Collisio
     final hideoutPaint = Paint()..color = const Color(0xFF3E2723);
     final pulseEffect = (math.sin(_pulseTimer * 2) * 0.1 + 0.9);
 
-    canvas.drawCircle(Offset.zero, size.x / 2 * pulseEffect + 10, Paint()..color = const Color(0xFF2E7D32).withOpacity(0.2));
+    canvas.drawCircle(
+      Offset.zero,
+      size.x / 2 * pulseEffect + 10,
+      Paint()..color = const Color(0xFF2E7D32).withOpacity(0.2),
+    );
     canvas.drawCircle(Offset.zero, size.x / 2, hideoutPaint);
 
     final entrancePaint = Paint()..color = const Color(0xFF5D4037);
     canvas.drawRect(
-      Rect.fromCenter(center: Offset(0, size.y / 4), width: size.x * 0.4, height: size.y * 0.2),
+      Rect.fromCenter(
+        center: Offset(0, size.y / 4),
+        width: size.x * 0.4,
+        height: size.y * 0.2,
+      ),
       entrancePaint,
     );
   }
@@ -1243,7 +1840,7 @@ class Hideout extends PositionComponent with HasGameRef<NgaisCallGame>, Collisio
   @override
   void onCollisionStart(Set<Vector2> intersectionPoints, PositionComponent other) {
     if (other is Player) {
-      (other as Player).isInHideout = true;
+      (other).isInHideout = true;
       (findGame() as NgaisCallGame).trapEnemiesInHideout(this);
     }
   }
@@ -1251,7 +1848,7 @@ class Hideout extends PositionComponent with HasGameRef<NgaisCallGame>, Collisio
   @override
   void onCollisionEnd(PositionComponent other) {
     if (other is Player) {
-      (other as Player).isInHideout = false;
+      (other).isInHideout = false;
     }
   }
 }
@@ -1265,69 +1862,173 @@ class SpiritualEnergyBar extends PositionComponent with HasGameRef<NgaisCallGame
   bool canUseEnergy(double amount) => energy >= amount;
 
   @override
+  bool get isHud => true; // Ensure this is rendered in screen space
+
+  @override
   void render(Canvas canvas) {
-    final bgPaint = Paint()..color = Colors.black.withOpacity(0.7);
-    canvas.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(10, 10, 200, 20), const Radius.circular(10)), bgPaint);
+    // Adjust position to account for safe area (notch, status bar)
+    final safeAreaTop = gameRef.canvasSize.y * 0.05; // 5% of screen height for safe area
+
+    // Energy bar
+    final bgPaint = Paint()..color = Colors.black.withOpacity(0.8);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(10, safeAreaTop + 10, 180, 16),
+        const Radius.circular(8),
+      ),
+      bgPaint,
+    );
 
     final energyPaint = Paint()
-      ..color = energy > GameConfig.player.protectionEnergyCost ? const Color(0xFF4CAF50) : const Color(0xFFFF5722);
-    final energyWidth = (energy / maxEnergy) * 200;
-    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(10, 10, energyWidth, 20), const Radius.circular(10)), energyPaint);
+      ..color = energy > GameConfig.player.protectionEnergyCost
+          ? const Color(0xFF4CAF50)
+          : const Color(0xFFFF5722);
+    final energyWidth = (energy / maxEnergy) * 180;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(10, safeAreaTop + 10, energyWidth, 16),
+        const Radius.circular(8),
+      ),
+      energyPaint,
+    );
 
-    final lifeYOffset = 35.0;
-    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(10, lifeYOffset, 200, 20), const Radius.circular(10)), bgPaint);
+    // Life bar
+    final lifeYOffset = safeAreaTop + 30.0;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(10, lifeYOffset, 180, 16),
+        const Radius.circular(8),
+      ),
+      bgPaint,
+    );
 
     final lifePaint = Paint()
-      ..color = game.player.life > (game.player.maxLife / 3) ? Colors.red : const Color(0xFFFF5722);
-    final lifeWidth = (game.player.life / game.player.maxLife) * 200;
-    canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(10, lifeYOffset, lifeWidth, 20), const Radius.circular(10)), lifePaint);
+      ..color = gameRef.player.life > (gameRef.player.maxLife / 3)
+          ? Colors.red
+          : const Color(0xFFFF5722);
+    final lifeWidth = (gameRef.player.life / gameRef.player.maxLife) * 180;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(10, lifeYOffset, lifeWidth, 16),
+        const Radius.circular(8),
+      ),
+      lifePaint,
+    );
 
+    // Life text
     final lifeTextPainter = TextPainter(
-      text: TextSpan(text: 'Life: ${game.player.life.toInt()}', style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+      text: TextSpan(
+        text: 'Life: ${gameRef.player.life.toInt()}',
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
       textDirection: TextDirection.ltr,
     );
     lifeTextPainter.layout();
-    lifeTextPainter.paint(canvas, Offset(10 + (200 - lifeTextPainter.width) / 2, lifeYOffset + 2));
+    lifeTextPainter.paint(
+      canvas,
+      Offset(10 + (180 - lifeTextPainter.width) / 2, lifeYOffset + 2),
+    );
 
+    // Score
     final scorePainter = TextPainter(
-      text: TextSpan(text: 'Score: ${game.score}', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+      text: TextSpan(
+        text: 'Score: ${gameRef.score}',
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
       textDirection: TextDirection.ltr,
     );
     scorePainter.layout();
-    scorePainter.paint(canvas, const Offset(10, 60));
+    scorePainter.paint(canvas, Offset(10, safeAreaTop + 50));
 
+    // Wisdom
     final wisdomPainter = TextPainter(
-      text: TextSpan(text: 'Wisdom: ${game.wisdom}', style: const TextStyle(color: Color(0xFF9C27B0), fontSize: 14, fontWeight: FontWeight.bold)),
+      text: TextSpan(
+        text: 'Wisdom: ${gameRef.wisdom}',
+        style: const TextStyle(
+          color: Color(0xFF9C27B0),
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
       textDirection: TextDirection.ltr,
     );
     wisdomPainter.layout();
-    wisdomPainter.paint(canvas, const Offset(10, 80));
+    wisdomPainter.paint(canvas, Offset(10, safeAreaTop + 68));
 
-    if (game.currentMessage != null) {
-      final messagePaint = Paint()..color = Colors.black.withOpacity(0.8);
-      final messageRect = Rect.fromLTWH(10, game.size.y - 120, game.size.x - 20, 60);
-      canvas.drawRRect(RRect.fromRectAndRadius(messageRect, const Radius.circular(8)), messagePaint);
-
-      final textPainter = TextPainter(
-        text: TextSpan(text: game.currentMessage!, style: const TextStyle(color: Color(0xFFFFD700), fontSize: 12, fontWeight: FontWeight.bold)),
+    // Score multiplier
+    if (gameRef.scoreMultiplier > 1.0) {
+      final multiplierPainter = TextPainter(
+        text: TextSpan(
+          text: 'Multiplier: ${gameRef.scoreMultiplier.toStringAsFixed(1)}x (${gameRef.scoreMultiplierTimer.toStringAsFixed(1)}s)',
+          style: const TextStyle(
+            color: Colors.amber,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         textDirection: TextDirection.ltr,
-        maxLines: 3,
-        textAlign: TextAlign.center,
       );
-      textPainter.layout(maxWidth: game.size.x - 40);
-      textPainter.paint(canvas, Offset(20, game.size.y - 110));
+      multiplierPainter.layout();
+      multiplierPainter.paint(canvas, Offset(10, safeAreaTop + 85));
     }
 
-    if (game.protectionOnCooldown) {
+    // Game messages
+    if (gameRef.currentMessage != null) {
+      final messagePaint = Paint()..color = Colors.black.withOpacity(0.8);
+      final messageRect = Rect.fromLTWH(
+        10,
+        gameRef.size.y - 80,
+        gameRef.size.x - 20,
+        50,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(messageRect, const Radius.circular(8)),
+        messagePaint,
+      );
+
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: gameRef.currentMessage!,
+          style: const TextStyle(
+            color: Color(0xFFFFD700),
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 2,
+        textAlign: TextAlign.center,
+      );
+      textPainter.layout(maxWidth: gameRef.size.x - 40);
+      textPainter.paint(canvas, Offset(20, gameRef.size.y - 70));
+    }
+
+    // Protection cooldown
+    if (gameRef.protectionOnCooldown) {
       final cooldownText = TextPainter(
         text: TextSpan(
-          text: 'Protection Cooldown: ${game.protectionCooldownTimer.toStringAsFixed(1)}',
-          style: const TextStyle(color: Colors.amber, fontSize: 12, fontWeight: FontWeight.bold),
+          text: 'Shield: ${gameRef.protectionCooldownTimer.toStringAsFixed(1)}s',
+          style: const TextStyle(
+            color: Colors.amber,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         textDirection: TextDirection.ltr,
       );
       cooldownText.layout();
-      cooldownText.paint(canvas, Offset(game.size.x - cooldownText.width - 10, 10));
+      cooldownText.paint(
+        canvas,
+        Offset(gameRef.size.x - cooldownText.width - 15, safeAreaTop + 50),
+      );
     }
   }
 }
@@ -1337,33 +2038,60 @@ class InstructionsText extends PositionComponent with HasGameRef<NgaisCallGame> 
   Future<void> onLoad() async {
     final textStyle = TextStyle(
       color: Colors.white,
-      fontSize: 10,
+      fontSize: 9,
       fontWeight: FontWeight.bold,
       shadows: [
         Shadow(color: Colors.black, offset: Offset(1, 1)),
-        Shadow(color: Colors.black, offset: Offset(-1, -1))
+        Shadow(color: Colors.black, offset: Offset(-1, -1)),
       ],
     );
 
-    add(TextComponent(
-      text: 'Collect Blessings(green), Proverbs(purple), Ancestors(gold)',
-      textRenderer: TextPaint(style: textStyle),
-      position: Vector2(game.size.x / 2, game.size.y - GameConfig.touchControls.joystickSize - 50),
-      anchor: Anchor.topCenter,
-    ));
+    add(
+      TextComponent(
+        text: 'Collect: Green(Blessings) Purple(Proverbs) Gold(Ancestors) Brown(Artifacts)',
+        textRenderer: TextPaint(style: textStyle),
+        position: Vector2(
+          gameRef.size.x / 2,
+          gameRef.size.y - 70,
+        ),
+        anchor: Anchor.topCenter,
+      ),
+    );
 
-    add(TextComponent(
-      text: 'Avoid red spirits. Use Hideouts(brown) to trap enemies!',
-      textRenderer: TextPaint(style: textStyle),
-      position: Vector2(game.size.x / 2, game.size.y - GameConfig.touchControls.joystickSize - 35),
-      anchor: Anchor.topCenter,
-    ));
+    add(
+      TextComponent(
+        text: 'Avoid RED spirits! Use Brown Hideouts to trap enemies!',
+        textRenderer: TextPaint(style: textStyle),
+        position: Vector2(
+          gameRef.size.x / 2,
+          gameRef.size.y - 55,
+        ),
+        anchor: Anchor.topCenter,
+      ),
+    );
 
-    add(TextComponent(
-      text: 'PROTECT button (right) uses energy for temporary shield',
-      textRenderer: TextPaint(style: textStyle),
-      position: Vector2(game.size.x / 2, game.size.y - GameConfig.touchControls.joystickSize - 20),
-      anchor: Anchor.topCenter,
-    ));
+    add(
+      TextComponent(
+        text: 'SHIELD button uses energy. Blue=Speed, Yellow=Energy Regen',
+        textRenderer: TextPaint(style: textStyle),
+        position: Vector2(
+          gameRef.size.x / 2,
+          gameRef.size.y - 40,
+        ),
+        anchor: Anchor.topCenter,
+      ),
+    );
+
+    add(
+      TextComponent(
+        text: 'Move RIGHT to explore new forest areas!',
+        textRenderer: TextPaint(style: textStyle),
+        position: Vector2(
+          gameRef.size.x / 2,
+          gameRef.size.y - 25,
+        ),
+        anchor: Anchor.topCenter,
+      ),
+    );
   }
 }
